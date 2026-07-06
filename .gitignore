@@ -1,0 +1,29 @@
+# Виртуальное окружение
+.venv/
+venv/
+env/
+
+# Кэш Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Настройки IDE
+.idea/
+.vscode/
+*.swp
+
+# Личные данные и результаты
+real_contracts/
+reports/
+*.xlsx
+*.pptx
+
+# Системные файлы
+.DS_Store
+Thumbs.db
+
+# Секреты
+.env
+secrets.toml
