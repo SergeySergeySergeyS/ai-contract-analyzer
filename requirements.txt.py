@@ -1,0 +1,9 @@
+streamlit==1.31.0
+gigachat==0.1.12
+python-docx==1.1.0
+PyPDF2==3.0.1
+openpyxl==3.1.2
+python-pptx==0.6.23
+PyMuPDF==1.23.8
+pytesseract==0.3.10
+Pillow==10.2.0
