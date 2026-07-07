@@ -17,7 +17,11 @@ def clean_markdown(text):
     text = text.replace('__', '')
     text = text.replace('_', '')
     text = text.replace('`', '')
-
+    
+    # === НОРМАЛИЗАЦИЯ ЭМОДЗИ ===
+    # Удаляем вариативный селектор U+FE0F (скрытый символ после эмодзи)
+    text = text.replace('\ufe0f', '')
+    
     # Нормализация эмодзи
     replacements = {
         '✌': '❌', '✖': '❌', '✕': '❌', '✘': '❌',
@@ -25,10 +29,10 @@ def clean_markdown(text):
         '✔': '✅', '✓': '✅', '☑': '✅',
         '⚡': '⚠️', '⚠': '⚠️',
     }
-
+    
     for wrong, correct in replacements.items():
         text = text.replace(wrong, correct)
-
+    
     return text.strip()
 
 
