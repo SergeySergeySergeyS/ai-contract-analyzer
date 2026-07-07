@@ -178,14 +178,10 @@ def create_contract_report(contract_data, output_dir):
 
 
 def parse_checklist(ai_text):
-    """Умный парсер с логикой статусов"""
-    items = []
-def parse_checklist(ai_text):
-    """Умный парсер с разделением склеенных пунктов"""
+    """Умный парсер с дополнением недостающих пунктов"""
     
     # === ШАГ 0: Разделяем склеенные пункты ===
-    # Если ИИ склеил несколько пунктов в одну строку — разделяем их
-    for _ in range(5):  # Повторяем 5 раз на случай множественного склеивания
+    for _ in range(5):
         ai_text = re.sub(
             r'([✅⚠️❌])\s*(\d+)\.\s*([^:]+?):\s*(.+?)\s*([✅⚠️❌])\s*(\d+)\.',
             r'\1 \2. \3: \4\n\5 \6.',
@@ -193,40 +189,30 @@ def parse_checklist(ai_text):
             flags=re.DOTALL
         )
     
-    items = []
-    # === СЛОВА ОБ ОТСУТСТВИИ → ❌ ===
+    # === СЛОВА ДЛЯ ПОСТОБРАБОТКИ ===
     absence_words = [
         'отсутствует', 'отсутствуют', 'отсутствие', 'отсутствием',
         'не указан', 'не указана', 'не указано', 'не упомянут',
         'не определён', 'не определена', 'не определено',
-        'не содержится', 'не включён',
-        'не описан', 'не предусмотрен', 'полностью отсутствует',
-        'нет пункта', 'нет раздела', 'нет указания', 'нет положения',
-        'нет четких', 'нет конкретных', 'нет отдельного', 'нет конкретной',
-        'нет запрета', 'нет условий', 'нет основания', 'нет оснований',
-        'опущено условие', 'опущены условия',
-        'никаких указаний', 'никаких условий',
-        'не урегулирован', 'не урегулировано',
-        'не оговорены', 'не оговорено',
-        'не согласована', 'не согласовано',
-        'не указан непосредственно', 'отсутствует информация',
-        'отсутствует подробное', 'отсутствует раздел',
-        'отсутствует специальный', 'нет специального',
+        'не содержится', 'не включён', 'не описан', 'не предусмотрен',
+        'полностью отсутствует', 'нет пункта', 'нет раздела',
+        'нет указания', 'нет положения', 'нет четких', 'нет конкретных',
+        'нет отдельного', 'нет конкретной', 'нет запрета', 'нет условий',
+        'нет основания', 'нет оснований', 'опущено условие', 'опущены условия',
+        'никаких указаний', 'никаких условий', 'не урегулирован',
+        'не урегулировано', 'не оговорены', 'не оговорено',
+        'не согласована', 'не согласовано', 'не указан непосредственно',
+        'отсутствует информация', 'отсутствует подробное',
+        'отсутствует раздел', 'отсутствует специальный', 'нет специального',
         'нет прямого указания', 'нет прямого упоминания',
         'нет конкретного указания', 'нет конкретного упоминания',
         'не урегулирован вопрос', 'не урегулирована возможность',
-        'не упомянуты', 'не упомянуто'
-    ]
-    absence_words = [
-        # ... существующие слова ...
-        # === НОВЫЕ СЛОВА ===
-        'не имеется', 'не имеются', 'не имелось',
-        'отсутствуют положения', 'отсутствует положение',
+        'не упомянуты', 'не упомянуто', 'не имеется', 'не имеются',
+        'не имелось', 'отсутствуют положения', 'отсутствует положение',
         'не прописаны положения', 'не прописано положение',
-        'не предусмотрено', 'не предусмотрены',
-        'нет положений', 'нет положения'
+        'не предусмотрено', 'не предусмотрены', 'нет положений', 'нет положения'
     ]
-    # === СЛОВА ОБ УТОЧНЕНИИ → ⚠️ ===
+    
     clarification_words = [
         'требуется уточнение', 'требуется уточнить', 'лучше конкретизировать',
         'следует уточнить', 'требует уточнения', 'нужно уточнить',
@@ -240,11 +226,9 @@ def parse_checklist(ai_text):
         'не уточнено', 'не уточнены', 'не уточнена',
         'частично указано', 'частично указаны', 'частично указана',
         'указано частично', 'указаны частично', 'указана частично',
-        'требуется конкретизация',
-        'неполный перечень', 'неполная информация',
+        'требуется конкретизация', 'неполный перечень', 'неполная информация',
         'отсутствие требований', 'отсутствие конкретных',
         'неправильно назван', 'недостаточно детализированы',
-        # === НОВЫЕ СЛОВА ===
         'не прописан', 'не прописана', 'не прописано',
         'подробно не прописан', 'подробно не прописана',
         'способ не прописан', 'детали не прописаны',
@@ -252,8 +236,7 @@ def parse_checklist(ai_text):
         'отсутствует определение', 'отсутствует конкретика',
         'не подробно', 'не детализирован'
     ]
-
-    # === СЛОВА О НАЛИЧИИ → ✅ ===
+    
     positive_words = [
         'предусмотрен', 'предусмотрено', 'предусматривает',
         'указан', 'указана', 'указано', 'указывает',
@@ -271,129 +254,55 @@ def parse_checklist(ai_text):
         'прописаны', 'прописаны основания',
         'определены', 'определены меры'
     ]
-
+    
     # === НОРМАЛИЗАЦИЯ ТЕКСТА ===
     normalized_lines = []
     for line in ai_text.split('\n'):
         line = clean_markdown(line)
         line = line.strip()
-        # Убираем "Комментарий:" в начале строки
         line = re.sub(r'^[Кк]омментарий:\s*', '', line)
-        # Убираем квадратные скобки
         line = re.sub(r'\[(.+)\]', r'\1', line)
         if line and not line.startswith('---'):
             normalized_lines.append(line)
-
-    # === ФОРМАТ 1: Стандартный (статус + номер + название: комментарий) ===
+    
+    # === ИЗВЛЕЧЕНИЕ ПУНКТОВ ===
+    items = []
+    found_numbers = set()
+    
     for line in normalized_lines:
         match = re.match(r'^([✅⚠️❌])\s*(\d+)\.\s*([^:]+?):\s*(.+)$', line)
         if match:
             status = match.group(1)
+            number = match.group(2)
             title = match.group(3).strip()
             comment = match.group(4).strip()
-
+            
             # Постобработка статусов
             comment_lower = comment.lower()
             has_absence = any(word in comment_lower for word in absence_words)
             has_clarification = any(word in comment_lower for word in clarification_words)
             has_positive = any(word in comment_lower for word in positive_words)
-
-            # === УМНАЯ ЛОГИКА ===
-            # Если есть И позитивные слова (указан/предусмотрен), И негативные (отсутствует/не прописан)
-            # → значит пункт ЕСТЬ, но с замечаниями → ⚠️
+            
             if has_positive and (has_absence or has_clarification):
                 status = '⚠️'
-            # Если только негативные слова без позитивных → ❌
             elif has_absence and not has_positive:
                 status = '❌'
-            # Если только слова уточнения → ⚠️
             elif has_clarification and status == '✅':
                 status = '⚠️'
-            # Если только позитивные слова → ✅
             elif has_positive and status == '❌':
                 status = '✅'
-
+            
             items.append({
                 'status': status,
-                'number': match.group(2),
+                'number': number,
                 'title': title,
                 'comment': comment
             })
-
-    # === ФОРМАТ 2: Если формат 1 не сработал — ищем пункты по номерам ===
-    if len(items) < 5:
-        items = []
-        i = 0
-        while i < len(normalized_lines):
-            line = normalized_lines[i]
-
-            # Ищем строку со статусом и номером
-            match = re.match(r'^([✅⚠️❌])\s*(\d+)\.\s*([^:]+?):?\s*$', line)
-            if match:
-                status = match.group(1)
-                number = match.group(2)
-                title = match.group(3).strip()
-
-                # Собираем комментарий со следующих строк
-                comment_lines = []
-                i += 1
-                while i < len(normalized_lines):
-                    next_line = normalized_lines[i]
-
-                    # Останавливаемся на новом пункте
-                    if re.match(r'^[✅⚠️❌]\s*\d+\.', next_line):
-                        break
-                    # Останавливаемся на итогах/рисках
-                    if 'итого' in next_line.lower():
-                        break
-                    if 'критические риск' in next_line.lower():
-                        break
-                    if 'тип договора' in next_line.lower():
-                        break
-
-                    comment_lines.append(next_line)
-                    i += 1
-
-                comment = ' '.join(comment_lines).strip()
-
-                if comment:
-                    # Постобработка
-                    comment_lower = comment.lower()
-                    has_absence = any(word in comment_lower for word in absence_words)
-                    has_clarification = any(word in comment_lower for word in clarification_words)
-                    has_positive = any(word in comment_lower for word in positive_words)
-
-                    # === УМНАЯ ЛОГИКА ===
-                    if has_positive and (has_absence or has_clarification):
-                        status = '⚠️'
-                    elif has_absence and not has_positive:
-                        status = '❌'
-                    elif has_clarification and status == '✅':
-                        status = '⚠️'
-                    elif has_positive and status == '❌':
-                        status = '✅'
-
-                    items.append({
-                        'status': status,
-                        'number': number,
-                        'title': title,
-                        'comment': comment
-                    })
-                continue
-
-            i += 1
-
-    # === ФИЛЬТРАЦИЯ: убираем пункты с пустыми комментариями ===
-    filtered_items = []
-    for item in items:
-        # Увеличиваем минимум до 15 символов
-        if len(item['comment']) < 15:
-            continue
-        filtered_items.append(item)
+            found_numbers.add(int(number))
+    
     # === ОЧИСТКА ОТ МУСОРНЫХ ФРАЗ ===
-    for item in filtered_items:
+    for item in items:
         comment = item['comment']
-        # Удаляем фразы, которые ИИ мог скопировать из промта
         junk_phrases = [
             r'Убираем\s*[«"]?\(?\d+\s*слов\)?[»"]?',
             r'\(\d+\s*слов\)',
@@ -415,11 +324,42 @@ def parse_checklist(ai_text):
         ]
         for pattern in junk_phrases:
             comment = re.sub(pattern, '', comment, flags=re.IGNORECASE)
-        # Убираем лишние пробелы
         comment = re.sub(r'\s+', ' ', comment).strip()
-        # Убираем висящие знаки препинания
         comment = comment.strip('.,;: ')
         item['comment'] = comment
+    
+    # === ДОПОЛНЕНИЕ НЕДОСТАЮЩИХ ПУНКТОВ ===
+    standard_items = {
+        1: 'Предмет договора',
+        2: 'Цена и порядок расчётов',
+        3: 'Сроки исполнения',
+        4: 'Ответственность',
+        5: 'Форс-мажор',
+        6: 'Подсудность',
+        7: 'Расторжение',
+        8: 'Персональные данные',
+        9: 'Существенные условия',
+        10: 'Односторонние изменения'
+    }
+    
+    for num in range(1, 11):
+        if num not in found_numbers:
+            items.append({
+                'status': '❌',
+                'number': str(num),
+                'title': standard_items[num],
+                'comment': 'Пункт отсутствует в анализе ИИ. Требуется проверка вручную.'
+            })
+    
+    # === СОРТИРОВКА ПО НОМЕРАМ ===
+    items.sort(key=lambda x: int(x['number']))
+    
+    # === ФИЛЬТРАЦИЯ: убираем пункты с пустыми комментариями ===
+    filtered_items = []
+    for item in items:
+        if len(item['comment']) < 10:
+            continue
+        filtered_items.append(item)
     
     return filtered_items
 
