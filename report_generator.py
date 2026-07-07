@@ -369,7 +369,27 @@ def parse_checklist(ai_text):
         if len(item['comment']) < 15:
             continue
         filtered_items.append(item)
-
+    # === ОЧИСТКА ОТ МУСОРНЫХ ФРАЗ ===
+    for item in filtered_items:
+        comment = item['comment']
+        # Удаляем фразы, которые ИИ мог скопировать из промта
+        junk_phrases = [
+            r'Убираем\s*[«"]?\(?\d+\s*слов\)?[»"]?',
+            r'\(\d+\s*слов\)',
+            r'твой\s+анализ',
+            r'минимум\s+\d+\s*слов',
+            r'минимум\s+слов',
+            r'\[твой\s+анализ\]',
+            r'твой\s+комментарий',
+        ]
+        for pattern in junk_phrases:
+            comment = re.sub(pattern, '', comment, flags=re.IGNORECASE)
+        # Убираем лишние пробелы
+        comment = re.sub(r'\s+', ' ', comment).strip()
+        # Убираем висящие знаки препинания
+        comment = comment.strip('.,;: ')
+        item['comment'] = comment
+    
     return filtered_items
 
 
@@ -389,7 +409,18 @@ def extract_summary(ai_text):
             if summary:
                 return summary
     return None
-
+    
+def calculate_summary(checklist_items):
+    """Пересчитывает итог на основе реальных статусов"""
+    if not checklist_items:
+        return None
+    
+    ok_count = sum(1 for item in checklist_items if item['status'] == '✅')
+    warn_count = sum(1 for item in checklist_items if item['status'] == '⚠️')
+    bad_count = sum(1 for item in checklist_items if item['status'] == '❌')
+    total = len(checklist_items)
+    
+    return f"{ok_count} из {total} в порядке, {warn_count} требуют внимания, {bad_count} отсутствуют"
 
 def extract_critical_risks(ai_text):
     """Умный парсер: собирает разбитые строки в один риск"""
