@@ -182,16 +182,8 @@ def create_contract_report(contract_data, output_dir):
 
 
 def parse_checklist(ai_text):
-    """Надёжный парсер с простой логикой статусов"""
-    
-    # === ШАГ 0: Разделяем склеенные пункты ===
-    for _ in range(5):
-        ai_text = re.sub(
-            r'([✅⚠️❌])\s*(\d+)\.\s*([^:]+?):\s*(.+?)\s*([✅⚠️❌])\s*(\d+)\.',
-            r'\1 \2. \3: \4\n\5 \6.',
-            ai_text,
-            flags=re.DOTALL
-        )
+    """Простой надёжный парсер"""
+    items = []
     
     # === СЛОВА ДЛЯ ПОСТОБРАБОТКИ ===
     absence_words = [
@@ -265,6 +257,9 @@ def parse_checklist(ai_text):
     ]
     
     # === НОРМАЛИЗАЦИЯ ТЕКСТА ===
+    # Удаляем скрытый символ U+FE0F после эмодзи
+    ai_text = ai_text.replace('\ufe0f', '')
+    
     normalized_lines = []
     for line in ai_text.split('\n'):
         line = clean_markdown(line)
@@ -275,7 +270,6 @@ def parse_checklist(ai_text):
             normalized_lines.append(line)
     
     # === ИЗВЛЕЧЕНИЕ ПУНКТОВ ===
-    items = []
     found_numbers = set()
     
     for line in normalized_lines:
@@ -292,13 +286,10 @@ def parse_checklist(ai_text):
             has_clarification = any(word in comment_lower for word in clarification_words)
             has_positive = any(word in comment_lower for word in positive_words)
             
-            # Если есть слова отсутствия → ❌
-            if has_absence:
+            if has_absence and not has_positive:
                 status = '❌'
-            # Если есть слова уточнения и статус ✅ → ⚠️
             elif has_clarification and status == '✅':
                 status = '⚠️'
-            # Если есть позитивные слова и статус ❌ → ✅
             elif has_positive and status == '❌' and not has_absence:
                 status = '✅'
             
@@ -309,34 +300,6 @@ def parse_checklist(ai_text):
                 'comment': comment
             })
             found_numbers.add(int(number))
-    
-    # === ОЧИСТКА ОТ МУСОРНЫХ ФРАЗ ===
-    for item in items:
-        comment = item['comment']
-        junk_phrases = [
-            r'Убираем\s*[«"]?\(?\d+\s*слов\)?[»"]?',
-            r'\(\d+\s*слов\)',
-            r'твой\s+анализ',
-            r'минимум\s+\d+\s*слов',
-            r'минимум\s+слов',
-            r'\[твой\s+анализ\]',
-            r'твой\s+комментарий',
-            r'\(отсутствие\s+данного\s+пункта\s+отмечено\s*[✅⚠️❌]\)',
-            r'\(недостаток\s+отмечен\s*[✅⚠️❌]\)',
-            r'\(недочет\s+указан\s*[✅⚠️❌]\)',
-            r'\(недостающий\s+пункт\s*[✅⚠️❌]\)',
-            r'\(отмечено\s*[✅⚠️❌]\)',
-            r'\(указано\s*[✅⚠️❌]\)',
-            r'недостаток\s+отмечен',
-            r'недочет\s+указан',
-            r'отсутствие\s+отмечено',
-            r'недостающий\s+пункт',
-        ]
-        for pattern in junk_phrases:
-            comment = re.sub(pattern, '', comment, flags=re.IGNORECASE)
-        comment = re.sub(r'\s+', ' ', comment).strip()
-        comment = comment.strip('.,;: ')
-        item['comment'] = comment
     
     # === ДОПОЛНЕНИЕ НЕДОСТАЮЩИХ ПУНКТОВ ===
     standard_items = {
@@ -364,14 +327,7 @@ def parse_checklist(ai_text):
     # === СОРТИРОВКА ПО НОМЕРАМ ===
     items.sort(key=lambda x: int(x['number']))
     
-    # === ФИЛЬТРАЦИЯ ===
-    filtered_items = []
-    for item in items:
-        if len(item['comment']) < 10:
-            continue
-        filtered_items.append(item)
-    
-    return filtered_items
+    return items
 
 
 def extract_summary(ai_text):
