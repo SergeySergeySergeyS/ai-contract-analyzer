@@ -251,8 +251,12 @@ def analyze_with_ai(text, llm):
     try:
         response = llm.chat(prompt_analysis)
         analysis = safe_decode(response.choices[0].message.content)
+        # === ОТЛАДКА: показываем сырой ответ ИИ ===
+        print(f"   🔍 СЫРОЙ ОТВЕТ ИИ (первые 500 символов):")
+        print(f"   {analysis[:500]}")
     except Exception as e:
         analysis = f"❌ Ошибка: {str(e)[:100]}"
+
 
     # === ЭТАП 3: Критические риски (с проверкой подсудности) ===
     prompt_risks = f"""Ты — юрист. Тип договора: {contract_type}. Субъектный состав: {subject_type}.
