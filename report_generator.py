@@ -178,7 +178,7 @@ def create_contract_report(contract_data, output_dir):
 
 
 def parse_checklist(ai_text):
-    """Умный парсер с приоритетной логикой статусов"""
+    """Надёжный парсер с простой логикой статусов"""
     
     # === ШАГ 0: Разделяем склеенные пункты ===
     for _ in range(5):
@@ -189,23 +189,7 @@ def parse_checklist(ai_text):
             flags=re.DOTALL
         )
     
-    # === КЛЮЧЕВЫЕ ФРАЗЫ С ВЫСОКИМ ПРИОРИТЕТОМ ===
-    # Если есть эти фразы — статус ВСЕГДА ❌ (даже если есть позитивные слова)
-    critical_absence_phrases = [
-        'отсутствует пункт', 'отсутствует раздел', 'отсутствует положение',
-        'отсутствует статья', 'отсутствует условие', 'отсутствует норма',
-        'отсутствует требование', 'отсутствует механизм',
-        'отсутствуют положения', 'отсутствуют пункты', 'отсутствуют разделы',
-        'отсутствуют условия', 'отсутствуют нормы',
-        'нет пункта', 'нет раздела', 'нет положения', 'нет статьи',
-        'нет условия', 'нет нормы', 'нет требования', 'нет механизма',
-        'нарушая требования', 'нарушает требования', 'нарушение требований',
-        'не соответствует требованиям', 'не соответствуют требованиям',
-        'полностью отсутствует', 'не предусмотрен раздел', 'не предусмотрена статья',
-        'не предусмотрено положение'
-    ]
-    
-    # === СЛОВА ОБ ОТСУТСТВИИ → ❌ ===
+    # === СЛОВА ДЛЯ ПОСТОБРАБОТКИ ===
     absence_words = [
         'отсутствует', 'отсутствуют', 'отсутствие', 'отсутствием',
         'не указан', 'не указана', 'не указано', 'не упомянут',
@@ -226,10 +210,10 @@ def parse_checklist(ai_text):
         'не упомянуты', 'не упомянуто', 'не имеется', 'не имеются',
         'не имелось', 'отсутствуют положения', 'отсутствует положение',
         'не прописаны положения', 'не прописано положение',
-        'не предусмотрено', 'не предусмотрены', 'нет положений', 'нет положения'
+        'не предусмотрено', 'не предусмотрены', 'нет положений', 'нет положения',
+        'нарушая требования', 'нарушает требования', 'нарушение требований'
     ]
     
-    # === СЛОВА ОБ УТОЧНЕНИИ → ⚠️ ===
     clarification_words = [
         'требуется уточнение', 'требуется уточнить', 'лучше конкретизировать',
         'следует уточнить', 'требует уточнения', 'нужно уточнить',
@@ -256,7 +240,6 @@ def parse_checklist(ai_text):
         'недостаточно четко', 'недостаточно ясно'
     ]
     
-    # === СЛОВА О НАЛИЧИИ → ✅ ===
     positive_words = [
         'предусмотрен', 'предусмотрено', 'предусматривает',
         'указан', 'указана', 'указано', 'указывает',
@@ -299,31 +282,21 @@ def parse_checklist(ai_text):
             title = match.group(3).strip()
             comment = match.group(4).strip()
             
-            # === ПРИОРИТЕТНАЯ ЛОГИКА СТАТУСОВ ===
+            # === ПРОСТАЯ ЛОГИКА СТАТУСОВ ===
             comment_lower = comment.lower()
+            has_absence = any(word in comment_lower for word in absence_words)
+            has_clarification = any(word in comment_lower for word in clarification_words)
+            has_positive = any(word in comment_lower for word in positive_words)
             
-            # ПРИОРИТЕТ 1: Критические фразы отсутствия → ВСЕГДА ❌
-            has_critical_absence = any(phrase in comment_lower for phrase in critical_absence_phrases)
-            if has_critical_absence:
+            # Если есть слова отсутствия → ❌
+            if has_absence:
                 status = '❌'
-            else:
-                # ПРИОРИТЕТ 2: Обычная логика
-                has_absence = any(word in comment_lower for word in absence_words)
-                has_clarification = any(word in comment_lower for word in clarification_words)
-                has_positive = any(word in comment_lower for word in positive_words)
-                
-                # Если есть И позитивные, И негативные слова → ⚠️ (пункт есть, но с замечаниями)
-                if has_positive and (has_absence or has_clarification):
-                    status = '⚠️'
-                # Если только негативные слова → ❌
-                elif has_absence and not has_positive:
-                    status = '❌'
-                # Если только слова уточнения → ⚠️
-                elif has_clarification and status == '✅':
-                    status = '⚠️'
-                # Если только позитивные слова → ✅
-                elif has_positive and status == '❌':
-                    status = '✅'
+            # Если есть слова уточнения и статус ✅ → ⚠️
+            elif has_clarification and status == '✅':
+                status = '⚠️'
+            # Если есть позитивные слова и статус ❌ → ✅
+            elif has_positive and status == '❌' and not has_absence:
+                status = '✅'
             
             items.append({
                 'status': status,
