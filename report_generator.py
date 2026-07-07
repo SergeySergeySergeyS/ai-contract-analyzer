@@ -15,16 +15,14 @@ def clean_markdown(text):
     text = text.replace('__', '')
     text = text.replace('_', '')
     text = text.replace('`', '')
-    # Удаляем скрытый символ U+FE0F
     text = text.replace('\ufe0f', '')
 
-    # === НОРМАЛИЗАЦИЯ ЭМОДЗИ ===
     replacements = {
         '✌': '❌', '✖': '❌', '✕': '❌', '✘': '❌',
         '✗': '❌', '×': '❌', '❎': '❌',
         '✔': '✅', '✓': '✅',
-        '☑': '✅',  # ballot box with check → ✅
-        '☐': '❌',  # ballot box → ❌
+        '☑': '✅',
+        '☐': '❌',
     }
     for wrong, correct in replacements.items():
         text = text.replace(wrong, correct)
@@ -153,13 +151,11 @@ def create_contract_report(contract_data, output_dir):
 
 
 def parse_checklist(ai_text):
-    """ПРОСТОЙ И НАДЁЖНЫЙ парсер — работает по формату: НОМЕР. НАЗВАНИЕ: СТАТУС КОММЕНТАРИЙ"""
+    """ПРОСТОЙ И НАДЁЖНЫЙ парсер"""
     
-    # === ШАГ 1: Очищаем от markdown и нормализуем эмодзи ===
     cleaned = clean_markdown(ai_text)
     cleaned = cleaned.replace('\ufe0f', '')
     
-    # === ШАГ 2: Стандартные названия пунктов ===
     standard_names = {
         1: 'Предмет договора',
         2: 'Цена и порядок расчётов',
@@ -175,28 +171,24 @@ def parse_checklist(ai_text):
     
     items = []
     found_numbers = set()
-    
-    # === ШАГ 3: Разбиваем на строки и ищем пункты ===
     lines = cleaned.split('\n')
     
     for line in lines:
         line = line.strip()
         
-        # === СТОП-СИГНАЛЫ И ПРОПУСКИ ===
         line_lower = line.lower()
-        # Пропускаем служебные строки (continue, а не break!)
+        # Пропускаем служебные строки (continue, НЕ break!)
         if 'тип договора' in line_lower and ':' in line_lower:
             continue
         if 'субъектный состав' in line_lower:
             continue
-        # Прерываем цикл на блоках рисков и итога
+        # Прерываем на рисках и итоге
         if 'критические риск' in line_lower:
             break
         if line_lower.startswith('итого') or ('итого' in line_lower and ':' in line_lower and 'из' in line_lower):
             break
         
-        # === ПРОСТОЙ ПАТТЕРН: НОМЕР. НАЗВАНИЕ: СТАТУС КОММЕНТАРИЙ ===
-        # Пример: "1. Предмет договора: ✅ Указаны объекты аренды..."
+        # Паттерн: НОМЕР. НАЗВАНИЕ: СТАТУС КОММЕНТАРИЙ
         match = re.match(r'^(\d{1,2})\.\s*(.+?):\s*([✅⚠❌])\s*(.+)$', line)
         
         if match:
@@ -205,9 +197,7 @@ def parse_checklist(ai_text):
             status = match.group(3)
             comment = match.group(4).strip()
             
-            # Проверяем, что номер в диапазоне 1-10 и ещё не добавлен
             if 1 <= number <= 10 and number not in found_numbers:
-                # === Находим стандартное название ===
                 title = None
                 for std_num, std_name in standard_names.items():
                     if std_name.lower() in title_raw.lower() or title_raw.lower() in std_name.lower():
@@ -222,7 +212,6 @@ def parse_checklist(ai_text):
                 if not title:
                     title = standard_names.get(number, title_raw)
                 
-                # === Умная постобработка статуса ===
                 comment_lower = comment.lower()
                 
                 absence_words = [
@@ -250,7 +239,6 @@ def parse_checklist(ai_text):
                 elif has_clarification and status == '✅':
                     status = '⚠️'
                 
-                # === Сохраняем пункт ===
                 if comment and len(comment) > 3:
                     items.append({
                         'status': status,
@@ -260,7 +248,6 @@ def parse_checklist(ai_text):
                     })
                     found_numbers.add(number)
     
-    # === ШАГ 4: Добавляем недостающие пункты ===
     for num in range(1, 11):
         if num not in found_numbers:
             items.append({
@@ -270,9 +257,7 @@ def parse_checklist(ai_text):
                 'comment': 'Пункт отсутствует в анализе ИИ. Требуется проверка вручную.'
             })
     
-    # === ШАГ 5: Сортировка ===
     items.sort(key=lambda x: int(x['number']))
-    
     return items
 
 
@@ -281,7 +266,6 @@ def calculate_summary(checklist_items):
     if not checklist_items:
         return None
     ok_count = sum(1 for item in checklist_items if item['status'] == '✅')
-    # Проверяем оба варианта: ⚠️ (с U+FE0F) и ⚠ (без U+FE0F)
     warn_count = sum(1 for item in checklist_items if item['status'] in ['⚠️', '⚠'])
     bad_count = sum(1 for item in checklist_items if item['status'] == '❌')
     total = len(checklist_items)
@@ -354,7 +338,6 @@ def generate_checklist(contract_data, checklist_items):
         checklist.append({'task': 'Указать дату заключения договора', 'priority': 'высокий'})
     if contract_data['amount'] == 'не указана':
         price_item = next((i for i in checklist_items if 'цен' in i['title'].lower() or 'расч' in i['title'].lower()), None)
-        # Проверяем оба варианта: ⚠️ и ⚠
         if price_item and price_item['status'] in ['⚠️', '⚠', '❌']:
             checklist.append({'task': 'Чётко прописать сумму договора и порядок расчётов', 'priority': 'высокий'})
     if len(contract_data['inn_list']) < 2:
