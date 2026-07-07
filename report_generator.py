@@ -126,7 +126,7 @@ def create_contract_report(contract_data, output_dir):
             checklist_table.rows[row_idx].cells[2].text = item['comment']
 
         doc.add_paragraph()
-        summary = extract_summary(ai_text)
+        summary = calculate_summary(checklist_items) or extract_summary(ai_text)
         if summary:
             p = doc.add_paragraph()
             p.add_run('📊 ИТОГ: ').bold = True
