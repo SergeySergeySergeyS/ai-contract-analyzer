@@ -6,22 +6,10 @@ from PyPDF2 import PdfReader
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from gigachat import GigaChat
-from report_generator import create_contract_report
-from presentation_generator import create_presentation
-
-# 🔑 ВСТАВЬ СЮДА СВОЙ КЛЮЧ от GigaChat
-AUTH_KEY = "MDE5ZjIyOTMtNTg1Mi03N2U4LWE5YWEtZjIzM2UxODRkMTM3OmNiOGM4YTI3LTY1NGMtNGYyNi05ZjFlLWY4OWEwNmYwMmQyOA=="
-
-# === ПУТЬ К ПАПКЕ С ДОГОВОРАМИ ===
-script_dir = Path(__file__).parent / 'real_contracts'
-
-if not script_dir.exists():
-    script_dir = Path(__file__).parent
-    print("⚠️  Папка 'real_contracts' не найдена, использую основную директорию")
 
 
-# === КОНВЕРТАЦИЯ .DOC → .DOCX ===
 def convert_doc_to_docx(doc_path):
+    """Конвертирует .doc в .docx через MS Word"""
     try:
         import win32com.client
         doc_path = Path(doc_path).resolve()
@@ -37,29 +25,26 @@ def convert_doc_to_docx(doc_path):
             doc.Close()
         finally:
             word.Quit()
-        print(f"   ✅ Конвертация завершена")
         return docx_path
-    except ImportError:
-        print(f"   ❌ Библиотека pywin32 не установлена")
-        return None
     except Exception as e:
         print(f"   ❌ Ошибка конвертации: {e}")
         return None
 
 
-# === ФУНКЦИИ ЧТЕНИЯ ===
 def read_docx(file_path):
+    """Читает текст из .docx"""
     doc = Document(file_path)
     return '\n'.join([para.text for para in doc.paragraphs])
 
 
 def read_pdf(file_path):
+    """Читает текст из .pdf"""
     reader = PdfReader(file_path)
     return '\n'.join([page.extract_text() or '' for page in reader.pages])
 
 
 def read_pdf_with_ocr(file_path):
-    """OCR через PyMuPDF (НЕ требует Poppler!)"""
+    """Читает текст из сканированного PDF через OCR"""
     try:
         import fitz
         import pytesseract
@@ -70,64 +55,41 @@ def read_pdf_with_ocr(file_path):
             r'C:\Program Files\Tesseract-OCR\tesseract.exe',
             r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
         ]
-        tesseract_found = False
         for path in possible_paths:
             if Path(path).exists():
                 pytesseract.pytesseract.tesseract_cmd = path
-                print(f"   ✅ Tesseract найден: {path}")
-                tesseract_found = True
                 break
 
-        if not tesseract_found:
-            print(f"   ❌ Tesseract не найден!")
-            return ''
-
-        print(f"   🔍 Распознаю текст через OCR...")
         pdf_document = fitz.open(str(file_path))
-        total_pages = len(pdf_document)
-        print(f"   📄 Всего страниц: {total_pages}")
-
         text = ''
-        for page_num in range(total_pages):
-            print(f"   📄 Обрабатываю страницу {page_num + 1}/{total_pages}...")
+        for page_num in range(len(pdf_document)):
             page = pdf_document[page_num]
             pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
             img_data = pix.tobytes("png")
             image = Image.open(io.BytesIO(img_data))
-            page_text = pytesseract.image_to_string(image, lang='rus+eng')
-            text += page_text + '\n'
-
+            text += pytesseract.image_to_string(image, lang='rus+eng') + '\n'
         pdf_document.close()
-        print(f"   ✅ OCR завершён, извлечено символов: {len(text)}")
         return text
-
-    except ImportError as e:
-        print(f"   ❌ Не установлена библиотека: {e}")
-        return ''
     except Exception as e:
         print(f"   ❌ Ошибка OCR: {e}")
         return ''
 
 
 def read_txt(file_path):
-    """Читает .txt файл с автоподбором кодировки"""
+    """Читает текст из .txt с автоопределением кодировки"""
     encodings = ['utf-8', 'utf-8-sig', 'cp1251', 'windows-1251', 'latin-1']
     for encoding in encodings:
         try:
             with open(file_path, 'r', encoding=encoding) as f:
                 return f.read()
-        except UnicodeDecodeError:
+        except (UnicodeDecodeError, UnicodeEncodeError):
             continue
-        except UnicodeEncodeError:
-            continue
-    # Если ничего не подошло — читаем как bytes и декодируем
     with open(file_path, 'rb') as f:
         return f.read().decode('utf-8', errors='ignore')
 
 
-# === АНАЛИЗ ДАННЫХ (БАЗОВЫЙ REGEX-АНАЛИЗ) ===
 def analyze_contract(text, filename):
-    """Извлекает базовые данные из договора"""
+    """Извлекает реквизиты договора через regex"""
     data = {
         'filename': filename,
         'number': 'не указан',
@@ -139,82 +101,85 @@ def analyze_contract(text, filename):
         'ai_analysis': '',
         'contract_type': 'не определён'
     }
-
-    # Номер договора
+    
     if match := re.search(r'№\s*(\d+)', text):
         data['number'] = match.group(1)
-
-    # Дата (с обработкой артефактов OCR)
     if match := re.search(r'(\d{1,2})\s+_*([а-яё]+)_*\s+(\d{4})\s*г', text, re.IGNORECASE):
-        day = match.group(1)
-        month = match.group(2)
-        year = match.group(3)
-        data['date'] = f"{day} {month} {year} г"
-
-    # Сумма
+        data['date'] = f"{match.group(1)} {match.group(2)} {match.group(3)} г"
     if match := re.search(r'(\d[\d\s]*)\s*(рубл|руб)', text, re.IGNORECASE):
         data['amount'] = match.group(1).replace(' ', '') + ' руб.'
-
-    # ИНН
     data['inn_list'] = re.findall(r'ИНН\s*(\d{10,12})', text)
-
-    # Пени
     if match := re.search(r'пени.*?(\d+[,.]?\d*)\s*%', text, re.IGNORECASE):
         peni_value = float(match.group(1).replace(',', '.'))
         data['peni'] = f"{peni_value}%"
-        if peni_value > 0.1:
-            data['peni_risk'] = '⚠️ ВЫШЕ НОРМЫ'
-        else:
-            data['peni_risk'] = '✅ норма'
-
+        data['peni_risk'] = '⚠️ ВЫШЕ НОРМЫ' if peni_value > 0.1 else '✅ норма'
+    
     return data
 
 
-# === ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ДЕКОДИРОВАНИЯ ===
 def safe_decode(content):
-    """Безопасно декодирует содержимое ответа GigaChat"""
+    """Безопасно декодирует байты в строку"""
     if isinstance(content, bytes):
         return content.decode('utf-8', errors='ignore')
     return content
 
 
-# === УЛУЧШЕННЫЙ ИИ-АНАЛИЗ ===
+def normalize_contract_type(raw_type):
+    """Нормализует тип договора к стандартному списку"""
+    raw_lower = raw_type.lower()
+    
+    type_mapping = {
+        'субаренда': 'аренда',
+        'аренда': 'аренда',
+        'наём': 'аренда',
+        'найм': 'аренда',
+        'поставка': 'поставка',
+        'услуга': 'услуги',
+        'услуги': 'услуги',
+        'оказание услуг': 'услуги',
+        'купля-продажа': 'купля-продажа',
+        'продажа': 'купля-продажа',
+        'дкп': 'купля-продажа',
+        'подряд': 'подряд',
+        'выполнение работ': 'подряд',
+    }
+    
+    if raw_lower in type_mapping:
+        return type_mapping[raw_lower]
+    
+    for key, value in type_mapping.items():
+        if key in raw_lower:
+            return value
+    
+    return 'не определён'
+
+
 def analyze_with_ai(text, llm):
-    """Финальная версия с проверкой субъектного состава и защитной логикой"""
+    """Отправляет договор в GigaChat для анализа"""
     max_length = 3500
     if len(text) > max_length:
         text = text[:max_length] + "...[текст обрезан]"
 
-    # === ЭТАП 1: Тип договора + субъектный состав ===
-    prompt_type = f"""Определи тип договора ОДНИМ СЛОВОМ: аренда, поставка, услуги, купля-продажа, подряд, иное.
-
-Также определи субъектный состав:
-- Если обе стороны — физические лица (граждане): "физлица"
-- Если обе стороны — юридические лица (компании): "юрлица"
-- Если одна физлицо, другая юрлицо: "смешанный"
+    # === ЭТАП 1: Тип договора и субъектный состав ===
+    prompt_type = f"""Определи тип договора ОДНИМ СЛОВОМ из списка: аренда, поставка, услуги, купля-продажа, подряд, иное.
+Также определи субъектный состав: физлица, юрлица, смешанный.
 
 Текст:
 {text[:500]}
 
-Ответь в формате: тип договора, субъектный состав
-Пример: купля-продажа, физлица"""
+Ответь СТРОГО в формате: тип_договора, субъектный состав
+Пример: аренда, юрлица"""
 
     try:
         response = llm.chat(prompt_type)
         result = safe_decode(response.choices[0].message.content)
+        
         parts = [p.strip() for p in result.split(',')]
-        contract_type = parts[0].lower().split()[0] if parts else 'не определён'
-        subject_type = parts[1].lower() if len(parts) > 1 else 'не определён'
-
-        valid_types = ['аренда', 'поставка', 'услуги', 'купля-продажа', 'подряд', 'иное']
-        if contract_type not in valid_types:
-            for vtype in valid_types:
-                if vtype in contract_type:
-                    contract_type = vtype
-                    break
-            else:
-                contract_type = 'не определён'
-
+        raw_type = parts[0].lower().split()[0] if parts else 'не определён'
+        contract_type = normalize_contract_type(raw_type)
+        
+        subject_type = parts[1].lower().split()[0] if len(parts) > 1 else 'не определён'
+        
         valid_subjects = ['физлица', 'юрлица', 'смешанный']
         if subject_type not in valid_subjects:
             subject_type = 'не определён'
@@ -222,41 +187,56 @@ def analyze_with_ai(text, llm):
         contract_type = 'не определён'
         subject_type = 'не определён'
 
-    # === ЭТАП 2: Анализ 10 пунктов (УПРОЩЁННЫЙ ПРОМТ) ===
+    # === ЭТАП 2: Анализ 10 пунктов ===
     prompt_analysis = f"""Ты — юрист. Проанализируй договор по 10 пунктам.
+Субъектный состав: {subject_type}
 
-Выведи ровно 10 строк в формате:
-✅ 1. Предмет договора: [твой анализ]
-✅ 2. Цена и порядок расчётов: [твой анализ]
-✅ 3. Сроки исполнения: [твой анализ]
-✅ 4. Ответственность: [твой анализ]
-✅ 5. Форс-мажор: [твой анализ]
-✅ 6. Подсудность: [твой анализ]
-✅ 7. Расторжение: [твой анализ]
-✅ 8. Персональные данные: [твой анализ]
-✅ 9. Существенные условия: [твой анализ]
-✅ 10. Односторонние изменения: [твой анализ]
+ВАЖНО: отвечай СТРОГО в формате ниже. БЕЗ markdown, БЕЗ заголовков ###, БЕЗ списков -.
+Каждый пункт — ОДНА СТРОКА в формате: НОМЕР. НАЗВАНИЕ: СТАТУС КОММЕНТАРИЙ
+
+СТАТУСЫ:
+✅ — пункт есть и корректен
+⚠️ — пункт есть, но требует уточнения
+❌ — пункт отсутствует
+
+Пункты:
+1. Предмет договора
+2. Цена и порядок расчётов
+3. Сроки исполнения
+4. Ответственность
+5. Форс-мажор
+6. Подсудность
+7. Расторжение
+8. Персональные данные
+9. Существенные условия
+10. Односторонние изменения
+
+ПРИМЕР ПРАВИЛЬНОГО ОТВЕТА (скопируй формат!):
+1. Предмет договора: ✅ В договоре указан адрес объекта, площадь 150 кв.м., кадастровый номер 78:00:1234567:890, назначение — нежилое помещение
+2. Цена и порядок расчётов: ❌ В договоре полностью отсутствует раздел о цене и порядке расчётов
+3. Сроки исполнения: ⚠️ Указан срок передачи имущества, но конкретные даты начала и окончания аренды не определены
+4. Ответственность: ✅ Определены меры ответственности сторон за нарушение условий договора
+5. Форс-мажор: ⚠️ Перечислены обстоятельства непреодолимой силы, но отсутствует порядок уведомления
+6. Подсудность: ✅ Установлена подсудность споров в Арбитражном суде Санкт-Петербурга
+7. Расторжение: ✅ Определены основания и процедура расторжения договора
+8. Персональные данные: ❌ Полностью отсутствует раздел об обработке персональных данных
+9. Существенные условия: ⚠️ Основные условия указаны, но требуют детализации
+10. Односторонние изменения: ❌ Отсутствуют положения об одностороннем изменении условий
 
 ИТОГО: X из 10 в порядке, Y требуют внимания, Z отсутствуют.
 
 Договор:
 {text}"""
 
+    analysis = ""
     try:
         response = llm.chat(prompt_analysis)
         analysis = safe_decode(response.choices[0].message.content)
-                print(f"   🔍 СЫРОЙ ОТВЕТ ИИ:")
-        print(f"   {analysis[:800]}")
-        # === ОТЛАДКА: показываем сырой ответ ИИ ===
-        print(f"   🔍 СЫРОЙ ОТВЕТ ИИ (первые 500 символов):")
-        print(f"   {analysis[:500]}")
     except Exception as e:
-        analysis = f"❌ Ошибка: {str(e)[:100]}"
+        analysis = f"❌ Ошибка анализа: {str(e)[:100]}"
 
-
-    # === ЭТАП 3: Критические риски (с проверкой подсудности) ===
+    # === ЭТАП 3: Критические риски ===
     prompt_risks = f"""Ты — юрист. Тип договора: {contract_type}. Субъектный состав: {subject_type}.
-
 Найди РОВНО 5 КРИТИЧЕСКИХ рисков.
 
 ФОРМАТ (каждый риск — СТРОГО ОДНА СТРОКА):
@@ -267,27 +247,11 @@ def analyze_with_ai(text, llm):
 4. [риск] — [статья закона] — [конкретная рекомендация]
 5. [риск] — [статья закона] — [конкретная рекомендация]
 
-ПРИМЕР ПРАВИЛЬНОГО ФОРМАТА:
-КРИТИЧЕСКИЕ РИСКИ:
-1. Отсутствие согласия супруга продавца на продажу доли — ст.35 СК РФ — получить нотариально удостоверенное согласие второго супруга
-2. Неуказаны обременения — ст.552 ГК РФ — проверить ЕГРН и описать все обременения
-3. Не определён срок передачи — ст.556 ГК РФ — установить чёткий срок передачи объекта
-4. Недостаточно сведений о предмете — ст.554 ГК РФ — указать кадастровый номер, площадь, адрес
-5. Отсутствие защиты ПДн — ФЗ-152 — добавить раздел о персональных данных
-
 ВАЖНО ДЛЯ ПОДСУДНОСТИ:
-- Если субъекты — ФИЗЛИЦА, то правильный суд — СУД ОБЩЕЙ ЮРИСДИКЦИИ (ГПК РФ ст.24-27)
-- Если указан арбитражный суд для физлиц — это КРИТИЧЕСКИЙ РИСК
-- Укажи: "Неправильная подсудность — указан арбитражный суд вместо суда общей юрисдикции — ст.24-27 ГПК РФ — изменить подсудность на суд общей юрисдикции по месту жительства ответчика или нахождения недвижимости"
+- Если субъекты ФИЗЛИЦА, а указан арбитражный суд — это КРИТИЧЕСКИЙ РИСК (ст.24-27 ГПК РФ)
 
 ВАЖНО ДЛЯ НЕДВИЖИМОСТИ:
-- ОБЯЗАТЕЛЬНО упоминай: кадастровый номер, площадь, этажность, адрес
-- Указывай конкретные действия: "получить нотариальное согласие", "проверить ЕГРН"
-
-ЗАПРЕЩЕНО:
-- Разбивать риск на несколько строк
-- Использовать markdown
-- Выводить меньше 5 рисков
+- Упоминай: кадастровый номер, площадь, этажность, адрес
 
 Договор:
 {text}
@@ -297,14 +261,14 @@ def analyze_with_ai(text, llm):
     try:
         response = llm.chat(prompt_risks)
         risks = safe_decode(response.choices[0].message.content)
-    except Exception as e:
+    except Exception:
         risks = ""
 
     return f"ТИП ДОГОВОРА: {contract_type}\nСУБЪЕКТНЫЙ СОСТАВ: {subject_type}\n\n{analysis}\n\n{risks}"
 
 
-# === ЭКСПОРТ В EXCEL ===
 def save_to_excel(results, output_file):
+    """Сохраняет результаты в Excel"""
     wb = Workbook()
     ws = wb.active
     ws.title = "Анализ договоров"
@@ -352,44 +316,44 @@ def save_to_excel(results, output_file):
     wb.save(output_file)
 
 
-# === ГЛАВНАЯ ФУНКЦИЯ ===
 def main():
+    """Основная функция для локального запуска"""
     print("=" * 70)
-    print("🤖 ИИ-АНАЛИЗАТОР ДОГОВОРОВ v2.0 (С OCR через PyMuPDF)")
+    print("🤖 ИИ-АНАЛИЗАТОР ДОГОВОРОВ v2.0")
     print("=" * 70)
+    
+    script_dir = Path(__file__).parent / 'real_contracts'
+    if not script_dir.exists():
+        script_dir = Path(__file__).parent
+        print("⚠️  Папка 'real_contracts' не найдена, использую основную директорию")
+    
     print(f"📁 Папка для анализа: {script_dir}")
-    print(f"📅 Дата запуска: {datetime.now().strftime('%d.%m.%Y %H:%M')}")
 
-    print("\n🔗 Подключаюсь к GigaChat...")
+    # Ключ GigaChat — замените на свой!
+    AUTH_KEY = "твой_ключ_сюда"
+    
     llm = GigaChat(
         credentials=AUTH_KEY,
         scope="GIGACHAT_API_PERS",
         verify_ssl_certs=False
     )
-    print("   ✅ Подключение установлено")
 
     files = []
     for ext in ['*.txt', '*.docx', '*.pdf', '*.doc']:
         files.extend(script_dir.glob(ext))
 
     print(f"\n📂 НАЙДЕНО ФАЙЛОВ: {len(files)}")
-
     if not files:
-        print("\n⚠️  В папке нет файлов для анализа")
         return
 
     results = []
 
     for file_path in files:
-        if file_path.name.startswith('~$'):
-            print(f"\n⏭️  Пропускаю временный файл: {file_path.name}")
-            continue
-        if file_path.name == 'ai_contracts_report.xlsx':
+        if file_path.name.startswith('~$') or file_path.name == 'ai_contracts_report.xlsx':
             continue
         if file_path.suffix.lower() == '.doc':
             docx_version = file_path.with_suffix('.docx')
             if docx_version.exists():
-                print(f"\n⏭️  Пропускаю {file_path.name} (уже есть .docx версия)")
                 continue
 
         print(f"\n🔍 {file_path.name}")
@@ -406,38 +370,25 @@ def main():
             elif file_path.suffix == '.pdf':
                 text = read_pdf(file_path)
                 if not text.strip():
-                    print(f"   ⚠️ Обычное чтение не дало текста, пробую OCR...")
                     text = read_pdf_with_ocr(file_path)
             else:
                 text = read_txt(file_path)
 
             if not text.strip():
-                print(f"   ⚠️ Файл пустой или не удалось извлечь текст")
                 continue
 
             data = analyze_contract(text, file_path.name)
-            print(f"   📄 Номер: {data['number']} | 💰 {data['amount']} | 📊 {data['peni']}")
+            print(f"   📄 Номер: {data['number']} | 💰 {data['amount']}")
 
-            print(f"   🤖 Отправляю в ИИ для анализа рисков...")
             ai_analysis = analyze_with_ai(text, llm)
             data['ai_analysis'] = ai_analysis
-
-            # Извлекаем тип договора из ответа ИИ
+            
             type_match = re.search(r'ТИП ДОГОВОРА[:\s]+(.+)', ai_analysis, re.IGNORECASE)
             if type_match:
                 data['contract_type'] = type_match.group(1).strip()
 
-            print(f"   📋 Тип договора: {data['contract_type']}")
-            print(f"   ✅ ИИ-анализ: {ai_analysis[:80]}...")
-
             results.append(data)
 
-        except UnicodeEncodeError as e:
-            print(f"   ❌ Ошибка кодировки: {e}")
-            print(f"   💡 Попробуйте изменить кодировку файла на UTF-8")
-        except UnicodeDecodeError as e:
-            print(f"   ❌ Ошибка декодирования: {e}")
-            print(f"   💡 Файл повреждён или в неподдерживаемой кодировке")
         except Exception as e:
             print(f"   ❌ Ошибка: {type(e).__name__}: {e}")
 
@@ -446,31 +397,30 @@ def main():
         save_to_excel(results, output_excel)
         print(f"\n📊 Excel-отчёт сохранён: {output_excel}")
 
-        print(f"\n📄 Создаю Word-отчёты с чек-листами...")
-        reports_dir = script_dir / 'reports'
-        reports_dir.mkdir(exist_ok=True)
-        for data in results:
-            try:
-                report_path = create_contract_report(data, reports_dir)
-                print(f"   ✅ {report_path.name}")
-            except Exception as e:
-                print(f"   ❌ Ошибка для {data['filename']}: {e}")
-        print(f"📁 Word-отчёты сохранены в: {reports_dir}")
-
-        print(f"\n📊 Создаю презентацию для руководства...")
-        presentation_path = script_dir / 'presentation.pptx'
+        # Импорт только для локального запуска
         try:
-            create_presentation(results, presentation_path)
-            print(f"   ✅ Презентация сохранена: {presentation_path}")
-        except Exception as e:
-            print(f"   ❌ Ошибка создания презентации: {e}")
+            from report_generator import create_contract_report
+            from presentation_generator import create_presentation
 
-    print("\n" + "=" * 70)
-    print(f"🎯 ОБРАБОТАНО: {len(results)} договоров")
-    print(f"📊 Excel-отчёт: {script_dir / 'ai_contracts_report.xlsx'}")
-    print(f"📄 Word-отчёты: {script_dir / 'reports'}")
-    print(f"📽️  Презентация: {script_dir / 'presentation.pptx'}")
-    print("=" * 70)
+            reports_dir = script_dir / 'reports'
+            reports_dir.mkdir(exist_ok=True)
+            for data in results:
+                try:
+                    report_path = create_contract_report(data, reports_dir)
+                    print(f"   ✅ {report_path.name}")
+                except Exception as e:
+                    print(f"   ❌ Ошибка для {data['filename']}: {e}")
+
+            presentation_path = script_dir / 'presentation.pptx'
+            try:
+                create_presentation(results, presentation_path)
+                print(f"   ✅ Презентация сохранена")
+            except Exception as e:
+                print(f"   ❌ Ошибка презентации: {e}")
+        except ImportError:
+            print("⚠️  Модули отчётов не найдены — пропускаем Word/PPTX")
+
+    print(f"\n🎯 ОБРАБОТАНО: {len(results)} договоров")
 
 
 if __name__ == "__main__":
