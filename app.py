@@ -42,12 +42,30 @@ st.markdown("""
 with st.sidebar:
     st.header("⚙️ Настройки")
 
-    # Поле для ввода ключа GigaChat
-    auth_key = st.text_input(
-        "🔑 Ключ GigaChat API",
-        type="password",
-        help="Получите ключ на developers.sber.ru"
-    )
+    # === АВТОМАТИЧЕСКОЕ ПОЛУЧЕНИЕ КЛЮЧА ===
+    # Сначала пробуем получить из Secrets Streamlit Cloud
+    try:
+        auth_key = st.secrets.get("AUTH_KEY", "")
+    except Exception:
+        auth_key = ""
+    
+    # Если нет в Secrets — пробуем переменную окружения
+    if not auth_key:
+        import os
+        auth_key = os.environ.get("AUTH_KEY", "")
+    
+    # Если нигде нет — показываем поле ввода
+    if not auth_key:
+        auth_key = st.text_input(
+            "🔑 Ключ GigaChat API",
+            type="password",
+            help="Получите ключ на developers.sber.ru"
+        )
+        if not auth_key:
+            st.warning("⚠️ Введите ключ GigaChat API")
+            st.stop()
+    else:
+        st.success("✅ Ключ GigaChat получен из Secrets")
 
     st.markdown("---")
     st.markdown("### 📊 Возможности системы:")
