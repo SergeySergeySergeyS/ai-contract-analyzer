@@ -6,9 +6,9 @@ import time
 import re
 from datetime import datetime
 
-# Импортируем наши модули
+# === ИМПОРТЫ НАШИХ МОДУЛЕЙ ===
 from gigachat import GigaChat
-from report_generator import create_contract_report
+from report_generator import create_contract_report, generate_pdf_report
 from presentation_generator import create_presentation
 from ai_contract_analyzer import (
     analyze_contract,
@@ -78,6 +78,7 @@ with st.sidebar:
     - 🔥 Критические риски со ссылками на ГК РФ
     - 📊 Excel-отчёт
     - 📄 Word-отчёт с чек-листом
+    - 📕 PDF-отчёт
     - 📽️ Презентация
     """)
 
@@ -251,17 +252,29 @@ if uploaded_files:
                 with col1:
                     for data in results:
                         try:
+                            # === WORD-ОТЧЁТ ===
                             report_path = create_contract_report(data, reports_dir)
                             with open(report_path, 'rb') as f:
                                 st.download_button(
-                                    f"📄 Отчёт: {data['filename'][:30]}...",
+                                    f"📄 Word: {data['filename'][:30]}...",
                                     f,
                                     file_name=report_path.name,
                                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                                     use_container_width=True
                                 )
+                            
+                            # === PDF-ОТЧЁТ (НОВОЕ!) ===
+                            pdf_path = generate_pdf_report(data, reports_dir)
+                            with open(pdf_path, 'rb') as f:
+                                st.download_button(
+                                    f"📕 PDF: {data['filename'][:30]}...",
+                                    f,
+                                    file_name=pdf_path.name,
+                                    mime="application/pdf",
+                                    use_container_width=True
+                                )
                         except Exception as e:
-                            st.error(f"❌ {e}")
+                            st.error(f"❌ Ошибка отчёта для {data['filename']}: {e}")
 
                 # Презентация
                 with col2:
