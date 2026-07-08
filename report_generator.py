@@ -4,7 +4,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from pathlib import Path
 import re
 from datetime import datetime
-
+from fpdf import FPDF
 
 def clean_markdown(text):
     """Удаляет markdown-разметку и нормализует эмодзи"""
@@ -376,3 +376,184 @@ def generate_checklist(contract_data, checklist_items):
         ]
 
     return checklist
+def generate_pdf_report(contract_data, output_dir):
+    """Создаёт PDF-отчёт с анализом договора"""
+    
+    # === ИНИЦИАЛИЗАЦИЯ PDF ===
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    
+    # === ПОДКЛЮЧЕНИЕ ШРИФТА С КИРИЛЛИЦЕЙ ===
+    # Путь к шрифту Roboto
+    font_path = Path(__file__).parent / 'Roboto-Regular.ttf'
+    
+    if font_path.exists():
+        pdf.add_font('Roboto', '', str(font_path), uni=True)
+        pdf.set_font('Roboto', size=11)
+    else:
+        # Если шрифт не найден — используем встроенный (без кириллицы!)
+        print(f"⚠️  Шрифт не найден: {font_path}")
+        pdf.set_font('Helvetica', size=11)
+    
+    # === ЗАГОЛОВОК ===
+    pdf.set_font_size(18)
+    pdf.set_text_color(68, 114, 196)
+    pdf.cell(0, 15, 'АНАЛИЗ ДОГОВОРА', align='C', new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(5)
+    
+    # === ТИП ДОГОВОРА ===
+    contract_type = contract_data.get('contract_type', 'не определён')
+    pdf.set_font_size(14)
+    pdf.set_text_color(68, 114, 196)
+    pdf.cell(0, 10, f'Тип договора: {contract_type}', align='C', new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(5)
+    
+    # === ИНФОРМАЦИЯ О ДОКУМЕНТЕ ===
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font_size(14)
+    pdf.cell(0, 10, 'Информация о документе', new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font_size(11)
+    pdf.cell(0, 7, f'Файл: {contract_data["filename"]}', new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(3)
+    
+    # === РЕКВИЗИТЫ ДОГОВОРА ===
+    pdf.set_font_size(14)
+    pdf.cell(0, 10, 'Реквизиты договора', new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font_size(11)
+    
+    # Таблица реквизитов
+    requisites = [
+        ('Номер договора', contract_data['number']),
+        ('Дата заключения', contract_data['date']),
+        ('Сумма договора', contract_data['amount']),
+        ('Найдено ИНН', f"{len(contract_data['inn_list'])} шт. ({', '.join(contract_data['inn_list']) or 'не найдено'})"),
+        ('Размер пеней', f"{contract_data['peni']} — {contract_data['peni_risk']}"),
+    ]
+    
+    for label, value in requisites:
+        pdf.set_font(style='B')
+        pdf.cell(60, 7, label, border=1)
+        pdf.set_font(style='')
+        pdf.cell(0, 7, str(value), border=1, new_x="LMARGIN", new_y="NEXT")
+    
+    pdf.ln(3)
+    
+    # === ОЦЕНКА РИСКА ПО ПЕНЯМ ===
+    pdf.set_font_size(14)
+    pdf.cell(0, 10, 'Оценка риска по пеням', new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font_size(11)
+    
+    if 'ВЫШЕ НОРМЫ' in contract_data['peni_risk']:
+        pdf.set_text_color(156, 0, 6)
+        pdf.cell(0, 7, 'ВЫСОКИЙ РИСК: Размер пеней превышает рыночную норму.', new_x="LMARGIN", new_y="NEXT")
+    elif 'норма' in contract_data['peni_risk']:
+        pdf.set_text_color(0, 97, 0)
+        pdf.cell(0, 7, 'НОРМА: Размер пеней в пределах нормы.', new_x="LMARGIN", new_y="NEXT")
+    else:
+        pdf.set_text_color(0, 0, 0)
+        pdf.cell(0, 7, 'Информация о пенях не найдена.', new_x="LMARGIN", new_y="NEXT")
+    
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(3)
+    
+    # === ЮРИДИЧЕСКИЙ ЧЕК-ЛИСТ ===
+    ai_text = contract_data.get('ai_analysis', '')
+    checklist_items = parse_checklist(ai_text)
+    
+    pdf.set_font_size(14)
+    pdf.cell(0, 10, 'Юридический чек-лист (ИИ-анализ)', new_x="LMARGIN", new_y="NEXT")
+    
+    if checklist_items:
+        # Заголовок таблицы
+        pdf.set_font_size(10)
+        pdf.set_fill_color(68, 114, 196)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font(style='B')
+        pdf.cell(15, 7, 'Статус', border=1, fill=True, align='C')
+        pdf.cell(45, 7, 'Пункт', border=1, fill=True, align='C')
+        pdf.cell(0, 7, 'Комментарий', border=1, fill=True, align='C', new_x="LMARGIN", new_y="NEXT")
+        
+        # Строки таблицы
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font(style='')
+        
+        for item in checklist_items:
+            # Цвет статуса
+            if '✅' in item['status']:
+                pdf.set_text_color(0, 128, 0)
+            elif '⚠' in item['status']:
+                pdf.set_text_color(196, 120, 0)
+            elif '❌' in item['status']:
+                pdf.set_text_color(156, 0, 6)
+            
+            # Статус
+            pdf.set_font_size(10)
+            pdf.cell(15, 7, item['status'], border=1, align='C')
+            
+            # Пункт
+            pdf.set_text_color(0, 0, 0)
+            pdf.cell(45, 7, item['title'], border=1)
+            
+            # Комментарий (с переносом)
+            comment = item['comment'][:150] + '...' if len(item['comment']) > 150 else item['comment']
+            # Разбиваем длинный комментарий на строки
+            pdf.multi_cell(0, 7, comment, border=1, new_x="LMARGIN", new_y="NEXT")
+        
+        # Итог
+        pdf.ln(3)
+        summary = calculate_summary(checklist_items)
+        if summary:
+            pdf.set_font_size(12)
+            pdf.set_font(style='B')
+            pdf.set_text_color(68, 114, 196)
+            pdf.cell(0, 10, f'ИТОГ: {summary}', new_x="LMARGIN", new_y="NEXT")
+            pdf.set_text_color(0, 0, 0)
+            pdf.set_font(style='')
+    
+    # === КРИТИЧЕСКИЕ РИСКИ ===
+    critical_risks = extract_critical_risks(ai_text)
+    if critical_risks:
+        pdf.ln(3)
+        pdf.set_font_size(14)
+        pdf.set_text_color(156, 0, 6)
+        pdf.cell(0, 10, 'Критические риски', new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font_size(11)
+        
+        for i, risk in enumerate(critical_risks, 1):
+            pdf.set_font(style='B')
+            pdf.cell(8, 7, f'{i}.')
+            pdf.set_font(style='')
+            pdf.multi_cell(0, 7, risk, new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(1)
+    
+    # === ЧЕК-ЛИСТ ДЛЯ ИСПРАВЛЕНИЯ ===
+    pdf.ln(3)
+    pdf.set_font_size(14)
+    pdf.set_text_color(0, 128, 0)
+    pdf.cell(0, 10, 'Чек-лист для исправления', new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font_size(11)
+    
+    checklist = generate_checklist(contract_data, checklist_items)
+    for i, item in enumerate(checklist, 1):
+        priority_mark = f"  [{item['priority'].upper()}]"
+        pdf.cell(5, 7, f'{i}.')
+        pdf.cell(5, 7, chr(9744))  # ☐ символ чекбокса
+        pdf.multi_cell(0, 7, f"{item['task']}{priority_mark}", new_x="LMARGIN", new_y="NEXT")
+    
+    # === ПОДПИСЬ ===
+    pdf.ln(5)
+    pdf.set_font_size(9)
+    pdf.set_text_color(128, 128, 128)
+    pdf.cell(0, 5, '_' * 80, new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 5, 'Отчёт сформирован автоматически системой ИИ-анализа договоров', new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 5, f'Дата формирования: {datetime.now().strftime("%d.%m.%Y %H:%M")}', new_x="LMARGIN", new_y="NEXT")
+    
+    # === СОХРАНЕНИЕ ===
+    safe_filename = re.sub(r'[^\w\-.]', '_', contract_data['filename'].rsplit('.', 1)[0])
+    output_path = Path(output_dir) / f'Отчёт_{safe_filename}.pdf'
+    pdf.output(str(output_path))
+    
+    return output_path
