@@ -387,15 +387,20 @@ def generate_pdf_report(contract_data, output_dir):
     pdf.set_auto_page_break(auto=True, margin=15)
     
     # === ПОДКЛЮЧЕНИЕ ШРИФТА С КИРИЛЛИЦЕЙ ===
-    # Путь к шрифту Roboto
-    font_path = Path(__file__).parent / 'Roboto-Regular.ttf'
+    # Путь к шрифтам Roboto
+    font_regular = Path(__file__).parent / 'Roboto-Regular.ttf'
+    font_bold = Path(__file__).parent / 'Roboto-Bold.ttf'
     
-    if font_path.exists():
-        pdf.add_font('Roboto', '', str(font_path), uni=True)
+    if font_regular.exists() and font_bold.exists():
+        pdf.add_font('Roboto', '', str(font_regular), uni=True)
+        pdf.add_font('Roboto', 'B', str(font_bold), uni=True)
+        pdf.set_font('Roboto', size=11)
+    elif font_regular.exists():
+        # Только обычный шрифт
+        pdf.add_font('Roboto', '', str(font_regular), uni=True)
         pdf.set_font('Roboto', size=11)
     else:
-        # Если шрифт не найден — используем встроенный (без кириллицы!)
-        print(f"⚠️  Шрифт не найден: {font_path}")
+        print(f"⚠️  Шрифты не найдены")
         pdf.set_font('Helvetica', size=11)
     
     # === ЗАГОЛОВОК ===
