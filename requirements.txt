@@ -7,3 +7,4 @@ python-pptx
 PyMuPDF
 pytesseract
 Pillow
+fpdf2==2.7.9
