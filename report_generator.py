@@ -376,6 +376,8 @@ def generate_checklist(contract_data, checklist_items):
         ]
 
     return checklist
+
+
 def generate_pdf_report(contract_data, output_dir):
     """Создаёт PDF-отчёт с анализом договора"""
     
