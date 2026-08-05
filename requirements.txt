@@ -5,6 +5,7 @@ PyPDF2
 openpyxl
 python-pptx
 PyMuPDF
-pytesseract
+pytesseract  
 Pillow
 fpdf2==2.7.9
+starlette==0.40.2
