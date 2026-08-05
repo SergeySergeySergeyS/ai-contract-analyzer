@@ -1,4 +1,5 @@
 import streamlit as st
+from gigachat import GigaChat
 import os
 import io
 import re
@@ -11,22 +12,17 @@ import fitz  # PyMuPDF
 from PIL import Image
 import pytesseract
 
-# GigaChat
-from gigachat import GigaChat
-
 st.set_page_config(page_title="ИИ-Анализатор договоров", page_icon="🤖", layout="wide")
 
 # ============================================================
-# НАСТРОЙКИ ТОКЕНА
+# НАСТРОЙКИ ТОКЕНА И ВЫБОР МОДЕЛИ
 # ============================================================
-# ВАРИАНТ 1: можно вставить токен прямо сюда (между кавычками)
-GIGACHAT_TOKEN_HARDCODE = ""  # ← например: "abc123-xyz:secret456"
+GIGACHAT_TOKEN_HARDCODE = ""  # ← можно вставить токен сюда, если лень вводить каждый раз
 
 st.title("🤖 ИИ-Анализатор договоров")
 st.markdown("Автоматический анализ договоров с помощью искусственного интеллекта")
 st.markdown("📄 **Загрузите договоры** → 🤖 **ИИ найдёт риски** → 📊 **Получите отчёты**")
 
-# ВАРИАНТ 2: ввести токен в боковой панели
 with st.sidebar:
     st.header("⚙️ Настройки GigaChat")
     sidebar_token = st.text_input(
@@ -36,11 +32,20 @@ with st.sidebar:
     )
     if sidebar_token.strip():
         st.session_state["giga_token"] = sidebar_token.strip()
-        st.success("✅ Токен сохранён в сессии")
+        st.success("✅ Токен сохранён")
     elif st.session_state.get("giga_token"):
         st.success("✅ Токен активен")
+        
     st.markdown("---")
-    st.caption("Токен ищется в порядке: код → боковая панель → Secrets → переменные окружения")
+    
+    # ИСПРАВЛЕНИЕ ОШИБКИ 404: Выбор модели из списка
+    model_name = st.selectbox(
+        "Модель нейросети",
+        ["GigaChat-Max", "GigaChat-Pro", "GigaChat-Plus", "GigaChat", "GigaChat-Lite"],
+        index=0,
+        help="Если при анализе вылетает ошибка 404 'No such model', просто выберите другую модель из списка. Чаще всего работает GigaChat-Max."
+    )
+    st.session_state["giga_model"] = model_name
 
 
 def get_credentials():
@@ -69,7 +74,6 @@ def extract_text_from_docx(file_bytes):
     doc = Document(io.BytesIO(file_bytes))
     return "\n".join([p.text for p in doc.paragraphs])
 
-
 def extract_text_from_pdf(file_bytes):
     text = ""
     try:
@@ -88,7 +92,6 @@ def extract_text_from_pdf(file_bytes):
         pass
     return text
 
-
 def extract_text_from_pptx(file_bytes):
     prs = Presentation(io.BytesIO(file_bytes))
     text = ""
@@ -97,7 +100,6 @@ def extract_text_from_pptx(file_bytes):
             if hasattr(shape, "text"):
                 text += shape.text + "\n"
     return text
-
 
 def extract_text(file):
     file_bytes = file.read()
@@ -122,7 +124,7 @@ def extract_text(file):
 
 
 # ============================================================
-# ИЗВЛЕЧЕНИЕ НОМЕРА И ДАТЫ (как в старом интерфейсе)
+# ИЗВЛЕЧЕНИЕ НОМЕРА И ДАТЫ
 # ============================================================
 def extract_number(text):
     head = text[:3000]
@@ -133,7 +135,6 @@ def extract_number(text):
     if m:
         return m.group(1)
     return "не указан"
-
 
 def extract_date(text):
     head = text[:3000]
@@ -158,10 +159,13 @@ def analyze_contract(text):
             "или добавьте GIGACHAT_CREDENTIALS в Settings → Secrets."
         )
 
+    # Берём модель, которую выбрал пользователь в сайдбаре
+    model_to_use = st.session_state.get("giga_model", "GigaChat-Max")
+
     giga = GigaChat(
         credentials=credentials,
         scope="GIGACHAT_API_PERS",
-        model="GigaChat",       # ← фикс ошибки "No model specified"
+        model=model_to_use,       # <--- ЗДЕСЬ ИСПРАВЛЕНА ОШИБКА 404
         verify_ssl_certs=False
     )
 
@@ -189,7 +193,6 @@ def empty_parsed():
         "Пени": "не указаны",
         "Риски": "не найдены"
     }
-
 
 def parse_response(ai_text):
     data = empty_parsed()
@@ -220,7 +223,7 @@ def parse_response(ai_text):
 
 
 # ============================================================
-# ОСНОВНОЙ ИНТЕРФЕЙС (как раньше)
+# ОСНОВНОЙ ИНТЕРФЕЙС
 # ============================================================
 st.markdown("---")
 st.subheader("📤 Загрузка договоров")
@@ -245,7 +248,7 @@ if uploaded_files:
             st.warning("⚠️ Не удалось извлечь текст из файла.")
             continue
 
-        with st.spinner("🤖 ИИ анализирует документ..."):
+        with st.spinner(f"🤖 ИИ ({st.session_state.get('giga_model', 'GigaChat-Max')}) анализирует документ..."):
             ai_response = None
             ai_error = None
             try:
@@ -254,7 +257,7 @@ if uploaded_files:
                 ai_error = str(e)
 
         parsed = parse_response(ai_response)
-        results.append((file.name, parsed, ai_response, ai_error))
+        results.append((file.name, parsed, ai_response, ai_error, text))
         processed += 1
 
     if processed:
@@ -265,15 +268,12 @@ if uploaded_files:
         st.markdown("---")
         st.subheader("📊 Результаты анализа")
 
-        for fname, parsed, ai_response, ai_error in results:
+        for fname, parsed, ai_response, ai_error, raw_text in results:
             st.markdown(f"#### 📄 {fname}")
 
-            # Извлекаем номер и дату из текста (работает даже без ИИ)
-            number = extract_number(text) if processed == 1 else extract_number(extract_text(file) if False else text)
-
             c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Номер", extract_number(text))
-            c2.metric("Дата", extract_date(text))
+            c1.metric("Номер", extract_number(raw_text))
+            c2.metric("Дата", extract_date(raw_text))
             c3.metric("Сумма", parsed["Сумма"])
             c4.metric("ИНН", parsed["ИНН"])
             c5.metric("Пени", parsed["Пени"])
@@ -292,6 +292,7 @@ if uploaded_files:
 
             if ai_error:
                 st.error(f"❌ Ошибка анализа: {ai_error}")
+                st.warning("💡 Подсказка: Попробуйте выбрать другую модель в боковой панели слева (например, GigaChat-Pro или GigaChat-Plus).")
 
             st.download_button(
                 label="📥 Скачать отчёт (TXT)",
