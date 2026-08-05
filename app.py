@@ -13,8 +13,6 @@ import pytesseract
 
 st.set_page_config(page_title="ИИ-Анализатор договоров", page_icon="🤖", layout="wide")
 
-GIGACHAT_TOKEN_HARDCODE = "" 
-
 st.title("🤖 ИИ-Анализатор договоров")
 st.markdown("Автоматический анализ договоров с помощью искусственного интеллекта")
 st.markdown("📄 **Загрузите договоры** → 🤖 **ИИ найдёт риски** → 📊 **Получите отчёты**")
@@ -24,7 +22,7 @@ with st.sidebar:
     sidebar_token = st.text_input(
         "Токен (client_id:client_secret)",
         type="password",
-        help="Получить токен: developers.sber.ru → Studio → ваш проект → Credentials"
+        help="Получить токен: developers.sber.ru"
     )
     if sidebar_token.strip():
         st.session_state["giga_token"] = sidebar_token.strip()
@@ -33,24 +31,53 @@ with st.sidebar:
         st.success("✅ Токен активен")
     
     st.markdown("---")
+    
+    # КНОПКА ДЛЯ ПОЛУЧЕНИЯ МОДЕЛЕЙ ОТ СБЕРА
+    if st.button("🔄 Узнать мои доступные модели"):
+        creds = st.session_state.get("giga_token", "")
+        if not creds:
+            st.warning("Сначала введите токен выше!")
+        else:
+            with st.spinner("Запрашиваю список у Сбера..."):
+                try:
+                    temp_giga = GigaChat(
+                        credentials=creds,
+                        scope="GIGACHAT_API_PERS",
+                        verify_ssl_certs=False
+                    )
+                    models_resp = temp_giga.get_models()
+                    available = [m.id for m in models_resp.data]
+                    st.session_state["available_models"] = available
+                    st.success(f"Найдено моделей: {len(available)}")
+                except Exception as e:
+                    st.error(f"Ошибка запроса: {e}")
+                    st.session_state["available_models"] = ["GigaChat", "GigaChat-Max", "GigaChat-Pro", "GigaChat-Plus", "GigaChat-Lite"]
+    
+    # Выпадающий список
+    default_models = ["GigaChat", "GigaChat-Max", "GigaChat-Pro", "GigaChat-Plus", "GigaChat-Lite"]
+    models_to_show = st.session_state.get("available_models", default_models)
+    
+    default_index = 0
+    for i, m in enumerate(models_to_show):
+        if "Max" in m or "Plus" in m or "Pro" in m:
+            default_index = i
+            break
+            
     model_name = st.selectbox(
-        "Модель нейросети",
-        ["GigaChat", "GigaChat-Plus", "GigaChat-Pro", "GigaChat-Max", "GigaChat-Lite"],
-        index=0,
+        "Выберите модель",
+        models_to_show,
+        index=default_index,
+        help="Нажмите кнопку выше, чтобы Сбер сам подсказал доступные вам модели."
     )
     st.session_state["giga_model"] = model_name
 
 
 def get_credentials():
-    if GIGACHAT_TOKEN_HARDCODE: return GIGACHAT_TOKEN_HARDCODE.strip()
     if st.session_state.get("giga_token"): return st.session_state["giga_token"]
     try:
-        for key in ("GIGACHAT_CREDENTIALS", "GIGACHAT_TOKEN", "GIGACHAT_ACCESS_TOKEN"):
+        for key in ("GIGACHAT_CREDENTIALS", "GIGACHAT_TOKEN"):
             if key in st.secrets: return str(st.secrets[key]).strip()
     except Exception: pass
-    for var in ("GIGACHAT_CREDENTIALS", "GIGACHAT_TOKEN", "GIGACHAT_ACCESS_TOKEN"):
-        val = os.getenv(var)
-        if val: return val.strip()
     return None
 
 
@@ -116,11 +143,10 @@ def extract_date(text):
 def analyze_contract(text):
     credentials = get_credentials()
     if not credentials:
-        raise ValueError("Не найден токен GigaChat. Вставьте его в боковую панель (⚙️) или в Settings → Secrets.")
+        raise ValueError("Не найден токен GigaChat. Вставьте его в боковую панель (⚙️).")
 
     model_to_use = st.session_state.get("giga_model", "GigaChat")
 
-    # Инициализация (работает с любой версией gigachat)
     giga = GigaChat(
         credentials=credentials,
         scope="GIGACHAT_API_PERS",
@@ -139,8 +165,6 @@ def analyze_contract(text):
 ТЕКСТ ДОГОВОРА:
 {text[:15000]}"""
     
-    # УНИВЕРСАЛЬНЫЙ ВЫЗОВ: просто передаем строку! 
-    # Это работает и в старых, и в новых версиях библиотеки Сбера без импорта models.
     response = giga.chat(prompt)
     return response.choices[0].message.content
 
@@ -191,7 +215,7 @@ if uploaded_files:
             st.warning("⚠️ Не удалось извлечь текст из файла.")
             continue
 
-        with st.spinner("🤖 ИИ анализирует документ..."):
+        with st.spinner(f"🤖 ИИ ({st.session_state.get('giga_model', '...')}) анализирует документ..."):
             ai_response, ai_error = None, None
             try:
                 ai_response = analyze_contract(text)
