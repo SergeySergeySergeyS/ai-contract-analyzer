@@ -1,6 +1,5 @@
 import streamlit as st
 from gigachat import GigaChat
-from gigachat.models import Chat, Messages, Roles # В старой версии этот модуль есть!
 import os
 import io
 import re
@@ -36,7 +35,7 @@ with st.sidebar:
     st.markdown("---")
     model_name = st.selectbox(
         "Модель нейросети",
-        ["GigaChat-Max", "GigaChat-Pro", "GigaChat-Plus", "GigaChat"],
+        ["GigaChat", "GigaChat-Plus", "GigaChat-Pro", "GigaChat-Max", "GigaChat-Lite"],
         index=0,
     )
     st.session_state["giga_model"] = model_name
@@ -119,22 +118,17 @@ def analyze_contract(text):
     if not credentials:
         raise ValueError("Не найден токен GigaChat. Вставьте его в боковую панель (⚙️) или в Settings → Secrets.")
 
-    models_to_try = [
-        st.session_state.get("giga_model", "GigaChat-Max"),
-        "GigaChat-Max", "GigaChat-Pro", "GigaChat-Plus", "GigaChat"
-    ]
-    models_to_try = list(dict.fromkeys(models_to_try))
+    model_to_use = st.session_state.get("giga_model", "GigaChat")
+
+    # Инициализация (работает с любой версией gigachat)
+    giga = GigaChat(
+        credentials=credentials,
+        scope="GIGACHAT_API_PERS",
+        model=model_to_use,
+        verify_ssl_certs=False
+    )
     
-    last_error = None
-    for model in models_to_try:
-        try:
-            giga = GigaChat(
-                credentials=credentials,
-                scope="GIGACHAT_API_PERS",
-                model=model,
-                verify_ssl_certs=False
-            )
-            prompt = f"""Проанализируй текст договора и верни данные СТРОГО в формате:
+    prompt = f"""Проанализируй текст договора и верни данные СТРОГО в формате:
 ТИП ДОГОВОРА: [тип]
 СУБЪЕКТНЫЙ СОСТАВ: [стороны]
 СУММА: [сумма]
@@ -144,27 +138,11 @@ def analyze_contract(text):
 
 ТЕКСТ ДОГОВОРА:
 {text[:15000]}"""
-            
-            # В версии 0.1.28 используется completion и объекты Chat/Messages
-            payload = Chat(
-                messages=[
-                    Messages(role=Roles.SYSTEM, content="Ты - профессиональный юрист. Анализируй документы внимательно."),
-                    Messages(role=Roles.USER, content=prompt)
-                ],
-                temperature=0.1,
-                max_tokens=1000
-            )
-            response = giga.completion(payload)
-            return response.choices[0].message.content
-            
-        except Exception as e:
-            last_error = str(e)
-            if "No such model" in last_error or "404" in last_error:
-                continue 
-            else:
-                raise 
     
-    raise ValueError(f"Ни одна модель не подошла. Последняя ошибка: {last_error}")
+    # УНИВЕРСАЛЬНЫЙ ВЫЗОВ: просто передаем строку! 
+    # Это работает и в старых, и в новых версиях библиотеки Сбера без импорта models.
+    response = giga.chat(prompt)
+    return response.choices[0].message.content
 
 
 def empty_parsed():
@@ -213,7 +191,7 @@ if uploaded_files:
             st.warning("⚠️ Не удалось извлечь текст из файла.")
             continue
 
-        with st.spinner("🤖 ИИ анализирует документ (перебираю модели)..."):
+        with st.spinner("🤖 ИИ анализирует документ..."):
             ai_response, ai_error = None, None
             try:
                 ai_response = analyze_contract(text)
