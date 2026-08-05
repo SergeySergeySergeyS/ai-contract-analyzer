@@ -1,4 +1,4 @@
-streamlit==1.37.1
+streamlit
 gigachat
 python-docx
 PyPDF2
@@ -8,3 +8,4 @@ PyMuPDF
 pytesseract  
 Pillow
 fpdf2==2.7.9
+starlette==0.52.1
