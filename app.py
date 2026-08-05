@@ -1,5 +1,6 @@
 import streamlit as st
 from gigachat import GigaChat
+from gigachat.models import Chat, Messages, Roles # В старой версии этот модуль есть!
 import os
 import io
 import re
@@ -13,7 +14,7 @@ import pytesseract
 
 st.set_page_config(page_title="ИИ-Анализатор договоров", page_icon="🤖", layout="wide")
 
-GIGACHAT_TOKEN_HARDCODE = ""
+GIGACHAT_TOKEN_HARDCODE = "" 
 
 st.title("🤖 ИИ-Анализатор договоров")
 st.markdown("Автоматический анализ договоров с помощью искусственного интеллекта")
@@ -35,28 +36,22 @@ with st.sidebar:
     st.markdown("---")
     model_name = st.selectbox(
         "Модель нейросети",
-        ["GigaChat-Max", "GigaChat-Pro", "GigaChat-Plus", "GigaChat", "GigaChat-Lite"],
+        ["GigaChat-Max", "GigaChat-Pro", "GigaChat-Plus", "GigaChat"],
         index=0,
-        help="Если вылетает 404, код сам попробует все модели по очереди."
     )
     st.session_state["giga_model"] = model_name
 
 
 def get_credentials():
-    if GIGACHAT_TOKEN_HARDCODE:
-        return GIGACHAT_TOKEN_HARDCODE.strip()
-    if st.session_state.get("giga_token"):
-        return st.session_state["giga_token"]
+    if GIGACHAT_TOKEN_HARDCODE: return GIGACHAT_TOKEN_HARDCODE.strip()
+    if st.session_state.get("giga_token"): return st.session_state["giga_token"]
     try:
-        for key in ("GIGACHAT_CREDENTIALS", "GIGACHAT_TOKEN", "GIGACHAT_ACCESS_TOKEN", "GIGACHAT_API_KEY"):
-            if key in st.secrets:
-                return str(st.secrets[key]).strip()
-    except Exception:
-        pass
-    for var in ("GIGACHAT_CREDENTIALS", "GIGACHAT_TOKEN", "GIGACHAT_ACCESS_TOKEN", "GIGACHAT_API_KEY"):
+        for key in ("GIGACHAT_CREDENTIALS", "GIGACHAT_TOKEN", "GIGACHAT_ACCESS_TOKEN"):
+            if key in st.secrets: return str(st.secrets[key]).strip()
+    except Exception: pass
+    for var in ("GIGACHAT_CREDENTIALS", "GIGACHAT_TOKEN", "GIGACHAT_ACCESS_TOKEN"):
         val = os.getenv(var)
-        if val:
-            return val.strip()
+        if val: return val.strip()
     return None
 
 
@@ -124,12 +119,10 @@ def analyze_contract(text):
     if not credentials:
         raise ValueError("Не найден токен GigaChat. Вставьте его в боковую панель (⚙️) или в Settings → Secrets.")
 
-    # Перебираем модели, пока не найдём рабочую
     models_to_try = [
         st.session_state.get("giga_model", "GigaChat-Max"),
         "GigaChat-Max", "GigaChat-Pro", "GigaChat-Plus", "GigaChat"
     ]
-    # Убираем дубликаты сохраняя порядок
     models_to_try = list(dict.fromkeys(models_to_try))
     
     last_error = None
@@ -151,15 +144,25 @@ def analyze_contract(text):
 
 ТЕКСТ ДОГОВОРА:
 {text[:15000]}"""
-            response = giga.chat(prompt)
-            # Если успешно — возвращаем результат
+            
+            # В версии 0.1.28 используется completion и объекты Chat/Messages
+            payload = Chat(
+                messages=[
+                    Messages(role=Roles.SYSTEM, content="Ты - профессиональный юрист. Анализируй документы внимательно."),
+                    Messages(role=Roles.USER, content=prompt)
+                ],
+                temperature=0.1,
+                max_tokens=1000
+            )
+            response = giga.completion(payload)
             return response.choices[0].message.content
+            
         except Exception as e:
             last_error = str(e)
             if "No such model" in last_error or "404" in last_error:
-                continue  # Пробуем следующую модель
+                continue 
             else:
-                raise  # Другая ошибка — пробрасываем наружу
+                raise 
     
     raise ValueError(f"Ни одна модель не подошла. Последняя ошибка: {last_error}")
 
