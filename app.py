@@ -1,5 +1,4 @@
 import streamlit as st
-from gigachat import GigaChat
 import os
 import io
 import re
@@ -12,15 +11,64 @@ import fitz  # PyMuPDF
 from PIL import Image
 import pytesseract
 
-st.set_page_config(page_title="ИИ-Анализатор договоров", page_icon="📄", layout="wide")
+# GigaChat
+from gigachat import GigaChat
+
+st.set_page_config(page_title="ИИ-Анализатор договоров", page_icon="🤖", layout="wide")
+
+# ============================================================
+# НАСТРОЙКИ ТОКЕНА
+# ============================================================
+# ВАРИАНТ 1: можно вставить токен прямо сюда (между кавычками)
+GIGACHAT_TOKEN_HARDCODE = ""  # ← например: "abc123-xyz:secret456"
+
 st.title("🤖 ИИ-Анализатор договоров")
 st.markdown("Автоматический анализ договоров с помощью искусственного интеллекта")
 st.markdown("📄 **Загрузите договоры** → 🤖 **ИИ найдёт риски** → 📊 **Получите отчёты**")
 
-# --- Извлечение текста из файлов ---
+# ВАРИАНТ 2: ввести токен в боковой панели
+with st.sidebar:
+    st.header("⚙️ Настройки GigaChat")
+    sidebar_token = st.text_input(
+        "Токен (client_id:client_secret)",
+        type="password",
+        help="Получить токен: developers.sber.ru → Studio → ваш проект → Credentials"
+    )
+    if sidebar_token.strip():
+        st.session_state["giga_token"] = sidebar_token.strip()
+        st.success("✅ Токен сохранён в сессии")
+    elif st.session_state.get("giga_token"):
+        st.success("✅ Токен активен")
+    st.markdown("---")
+    st.caption("Токен ищется в порядке: код → боковая панель → Secrets → переменные окружения")
+
+
+def get_credentials():
+    """Ищем токен GigaChat во всех возможных местах"""
+    if GIGACHAT_TOKEN_HARDCODE:
+        return GIGACHAT_TOKEN_HARDCODE.strip()
+    if st.session_state.get("giga_token"):
+        return st.session_state["giga_token"]
+    try:
+        for key in ("GIGACHAT_CREDENTIALS", "GIGACHAT_TOKEN", "GIGACHAT_ACCESS_TOKEN", "GIGACHAT_API_KEY"):
+            if key in st.secrets:
+                return str(st.secrets[key]).strip()
+    except Exception:
+        pass
+    for var in ("GIGACHAT_CREDENTIALS", "GIGACHAT_TOKEN", "GIGACHAT_ACCESS_TOKEN", "GIGACHAT_API_KEY"):
+        val = os.getenv(var)
+        if val:
+            return val.strip()
+    return None
+
+
+# ============================================================
+# ИЗВЛЕЧЕНИЕ ТЕКСТА ИЗ ФАЙЛОВ
+# ============================================================
 def extract_text_from_docx(file_bytes):
     doc = Document(io.BytesIO(file_bytes))
     return "\n".join([p.text for p in doc.paragraphs])
+
 
 def extract_text_from_pdf(file_bytes):
     text = ""
@@ -30,15 +78,16 @@ def extract_text_from_pdf(file_bytes):
             text += page.get_text() + "\n"
         if len(text.strip()) > 20:
             return text
-    except:
+    except Exception:
         pass
     try:
         reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
         for page in reader.pages:
             text += page.extract_text() + "\n"
-    except:
+    except Exception:
         pass
     return text
+
 
 def extract_text_from_pptx(file_bytes):
     prs = Presentation(io.BytesIO(file_bytes))
@@ -48,6 +97,7 @@ def extract_text_from_pptx(file_bytes):
             if hasattr(shape, "text"):
                 text += shape.text + "\n"
     return text
+
 
 def extract_text(file):
     file_bytes = file.read()
@@ -62,71 +112,116 @@ def extract_text(file):
         try:
             img = Image.open(io.BytesIO(file_bytes))
             return pytesseract.image_to_string(img, lang='rus+eng')
-        except:
+        except Exception:
             return ""
     else:
         try:
             return file_bytes.decode('utf-8', errors='ignore')
-        except:
+        except Exception:
             return ""
 
-# --- Анализ через GigaChat ---
+
+# ============================================================
+# ИЗВЛЕЧЕНИЕ НОМЕРА И ДАТЫ (как в старом интерфейсе)
+# ============================================================
+def extract_number(text):
+    head = text[:3000]
+    m = re.search(r'[№N]\s*(\d+[а-яА-Я/\-]*)', head)
+    if m:
+        return m.group(1)
+    m = re.search(r'(?:Договор|Контракт|Соглашение)\s+[№N]?\s*(\d+)', head, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    return "не указан"
+
+
+def extract_date(text):
+    head = text[:3000]
+    months = r'января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря'
+    m = re.search(rf'[«"]?(\d{{1,2}})[»"]?\s+({months})\s+(\d{{4}})', head, re.IGNORECASE)
+    if m:
+        return f"{m.group(1)} {m.group(2)} {m.group(3)} г"
+    m = re.search(r'(\d{2})\.(\d{2})\.(\d{4})', head)
+    if m:
+        return f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
+    return "не указана"
+
+
+# ============================================================
+# ИИ-АНАЛИЗ
+# ============================================================
 def analyze_contract(text):
-    credentials = st.secrets.get("GIGACHAT_CREDENTIALS", os.getenv("GIGACHAT_CREDENTIALS", ""))
+    credentials = get_credentials()
     if not credentials:
-        st.error("⚠️ Не найден токен GIGACHAT_CREDENTIALS в Settings → Secrets!")
-        return None
+        raise ValueError(
+            "Не найден токен GigaChat. Вставьте его в боковую панель (⚙️) "
+            "или добавьте GIGACHAT_CREDENTIALS в Settings → Secrets."
+        )
+
+    giga = GigaChat(
+        credentials=credentials,
+        scope="GIGACHAT_API_PERS",
+        model="GigaChat",       # ← фикс ошибки "No model specified"
+        verify_ssl_certs=False
+    )
 
     prompt = f"""Проанализируй текст договора и верни данные СТРОГО в формате:
-НОМЕР: [номер договора]
-ДАТА: [дата заключения]
 ТИП ДОГОВОРА: [тип]
 СУБЪЕКТНЫЙ СОСТАВ: [стороны]
 СУММА: [сумма]
 ИНН: [ИНН]
-ПЕНИ: [пени/штрафы]
-РИСКИ: [основные юридические риски]
+ПЕНИ: [пени]
+РИСКИ: [основные риски]
 
 ТЕКСТ ДОГОВОРА:
 {text[:15000]}"""
 
-    try:
-        giga = GigaChat(
-            credentials=credentials,
-            scope="GIGACHAT_API_PERS",
-            model="GigaChat",
-            verify_ssl_certs=False
-        )
-        response = giga.chat(prompt)
-        return response.choices[0].message.content
-    except Exception as e:
-        st.error(f"❌ Ошибка анализа: {e}")
-        return None
+    response = giga.chat(prompt)
+    return response.choices[0].message.content
 
-# --- Разбор ответа ИИ ---
+
+def empty_parsed():
+    return {
+        "Тип договора": "не определён",
+        "Субъектный состав": "не определён",
+        "Сумма": "не указана",
+        "ИНН": "0",
+        "Пени": "не указаны",
+        "Риски": "не найдены"
+    }
+
+
 def parse_response(ai_text):
-    data = {"Номер": "не указан", "Дата": "не указана", "Тип договора": "не определён",
-            "Субъектный состав": "не определён", "Сумма": "не указана", "ИНН": "0",
-            "Пени": "не указаны", "Риски": "не найдены"}
+    data = empty_parsed()
     if not ai_text:
         return data
-    for line in ai_text.split('\n'):
-        line = line.strip()
-        if ":" in line:
-            key, val = line.split(":", 1)
-            key = key.strip().upper()
-            val = val.strip()
-            if "НОМЕР" in key: data["Номер"] = val
-            elif "ДАТА" in key: data["Дата"] = val
-            elif "ТИП" in key: data["Тип договора"] = val
-            elif "СУБЪЕКТ" in key or "СТОРОНЫ" in key: data["Субъектный состав"] = val
-            elif "СУММА" in key or "ЦЕНА" in key: data["Сумма"] = val
-            elif "ИНН" in key: data["ИНН"] = val
-            elif "ПЕНИ" in key or "ШТРАФ" in key: data["Пени"] = val
-            elif "РИСКИ" in key: data["Риски"] = val
+    for line in ai_text.split("\n"):
+        line = line.strip().lstrip("-•* ").replace("**", "")
+        if ":" not in line:
+            continue
+        key, val = line.split(":", 1)
+        key = key.strip().upper()
+        val = val.strip()
+        if not val:
+            continue
+        if "ТИП" in key:
+            data["Тип договора"] = val
+        elif "СУБЪЕКТ" in key or "СОСТАВ" in key or "СТОРОН" in key:
+            data["Субъектный состав"] = val
+        elif "СУММА" in key or "ЦЕНА" in key or "СТОИМОСТЬ" in key:
+            data["Сумма"] = val
+        elif "ИНН" in key:
+            data["ИНН"] = val
+        elif "ПЕН" in key or "ШТРАФ" in key or "НЕУСТОЙК" in key:
+            data["Пени"] = val
+        elif "РИСК" in key:
+            data["Риски"] = val
     return data
 
-# --- Основной интерфейс ---
+
+# ============================================================
+# ОСНОВНОЙ ИНТЕРФЕЙС (как раньше)
+# ============================================================
 st.markdown("---")
 st.subheader("📤 Загрузка договоров")
 uploaded_files = st.file_uploader(
@@ -139,8 +234,11 @@ if uploaded_files:
     st.success(f"✅ Загружено файлов: {len(uploaded_files)}")
     st.markdown(f"### 📂 Список файлов ({len(uploaded_files)})")
 
+    results = []
+    processed = 0
+
     for file in uploaded_files:
-        st.markdown(f"#### 📄 {file.name}")
+        st.markdown(f"📄 **{file.name}**")
         text = extract_text(file)
 
         if not text.strip():
@@ -148,32 +246,57 @@ if uploaded_files:
             continue
 
         with st.spinner("🤖 ИИ анализирует документ..."):
-            ai_response = analyze_contract(text)
+            ai_response = None
+            ai_error = None
+            try:
+                ai_response = analyze_contract(text)
+            except Exception as e:
+                ai_error = str(e)
 
-        if ai_response:
-            parsed = parse_response(ai_response)
-            st.success(f"✅ Обработано: {file.name}")
+        parsed = parse_response(ai_response)
+        results.append((file.name, parsed, ai_response, ai_error))
+        processed += 1
 
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Номер", parsed["Номер"])
-                st.metric("Дата", parsed["Дата"])
-            with col2:
-                st.metric("Сумма", parsed["Сумма"])
-                st.metric("ИНН", parsed["ИНН"])
-            with col3:
-                st.metric("Пени", parsed["Пени"])
+    if processed:
+        st.success(f"✅ Обработано: {processed} договоров")
+        st.balloons()
+        st.success(f"🎉 Готово! Проанализировано: {processed} договоров")
+
+        st.markdown("---")
+        st.subheader("📊 Результаты анализа")
+
+        for fname, parsed, ai_response, ai_error in results:
+            st.markdown(f"#### 📄 {fname}")
+
+            # Извлекаем номер и дату из текста (работает даже без ИИ)
+            number = extract_number(text) if processed == 1 else extract_number(extract_text(file) if False else text)
+
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Номер", extract_number(text))
+            c2.metric("Дата", extract_date(text))
+            c3.metric("Сумма", parsed["Сумма"])
+            c4.metric("ИНН", parsed["ИНН"])
+            c5.metric("Пени", parsed["Пени"])
 
             st.markdown(f"📋 **Тип договора:** {parsed['Тип договора']}")
             st.markdown(f"👥 🏢 **Субъектный состав:** {parsed['Субъектный состав']}")
 
-            with st.expander("🤖 ИИ-анализ и Риски"):
-                st.info(parsed["Риски"])
+            st.markdown("**🤖 ИИ-анализ:**")
+            if ai_response:
+                st.info(ai_response)
+                if parsed["Риски"] != "не найдены":
+                    with st.expander("⚠️ Юридические риски"):
+                        st.write(parsed["Риски"])
+            else:
+                st.text(f"ТИП ДОГОВОРА: {parsed['Тип договора']}  СУБЪЕКТНЫЙ СОСТАВ: {parsed['Субъектный состав']}")
+
+            if ai_error:
+                st.error(f"❌ Ошибка анализа: {ai_error}")
 
             st.download_button(
                 label="📥 Скачать отчёт (TXT)",
-                data=f"Отчёт по {file.name}\n\n{ai_response}".encode('utf-8'),
-                file_name=f"Report_{file.name}.txt",
+                data=f"Отчёт по {fname}\n\n{ai_response or 'Анализ не выполнен'}".encode('utf-8'),
+                file_name=f"Report_{fname}.txt",
                 mime="text/plain"
             )
             st.markdown("---")
