@@ -1,5 +1,5 @@
 streamlit
-gigachat
+gigachat==0.1.28.1
 python-docx
 PyPDF2
 openpyxl
