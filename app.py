@@ -4,11 +4,10 @@ import os
 import io
 import re
 
-# Библиотеки для чтения и создания документов
 from docx import Document
 import PyPDF2
 from pptx import Presentation
-import fitz  # PyMuPDF
+import fitz
 from PIL import Image
 import pytesseract
 
@@ -16,61 +15,52 @@ st.set_page_config(page_title="ИИ-Анализатор договоров", pa
 
 st.title("🤖 ИИ-Анализатор договоров")
 st.markdown("Автоматический анализ договоров с помощью искусственного интеллекта")
-st.markdown("📄 **Загрузите договоры** → 🤖 **ИИ найдёт риски** → 📊 **Получите отчёты и презентации**")
+st.markdown("📄 **Загрузите договоры** → 🤖 **ИИ найдёт риски** → 📊 **Получите отчёты**")
 
+# ============================================================
+# АВТОПОДГРУЗКА ТОКЕНА
+# ============================================================
+def get_credentials():
+    """Ищем токен автоматически: Secrets → переменные окружения"""
+    # 1. Streamlit Secrets (главный способ для Cloud)
+    try:
+        for key in ("GIGACHAT_CREDENTIALS", "GIGACHAT_TOKEN", "GIGACHAT_ACCESS_TOKEN"):
+            if key in st.secrets:
+                return str(st.secrets[key]).strip()
+    except Exception:
+        pass
+    # 2. Переменные окружения сервера
+    for var in ("GIGACHAT_CREDENTIALS", "GIGACHAT_TOKEN", "GIGACHAT_ACCESS_TOKEN"):
+        val = os.getenv(var)
+        if val:
+            return val.strip()
+    return None
+
+# ============================================================
+# САЙДБАР (статус токена + выбор модели)
+# ============================================================
 with st.sidebar:
-    st.header("⚙️ Настройки GigaChat")
-    sidebar_token = st.text_input(
-        "Токен (client_id:client_secret)",
-        type="password",
-        help="Получить токен: developers.sber.ru"
-    )
-    if sidebar_token.strip():
-        st.session_state["giga_token"] = sidebar_token.strip()
-        if "available_models" in st.session_state:
-            del st.session_state["available_models"]
-        if "working_model" in st.session_state:
-            del st.session_state["working_model"]
-        st.success("✅ Токен сохранён")
-    elif st.session_state.get("giga_token"):
-        st.success("✅ Токен активен")
+    st.header("⚙️ Настройки")
+    
+    creds = get_credentials()
+    if creds:
+        st.success("✅ Токен GigaChat загружен автоматически")
+    else:
+        st.warning("⚠️ Токен не найден. Добавьте GIGACHAT_CREDENTIALS в Settings → Secrets")
     
     st.markdown("---")
     
-    creds = st.session_state.get("giga_token", "")
-    if creds and "available_models" not in st.session_state:
-        with st.spinner("🔍 Запрашиваю доступные модели у Сбера..."):
-            try:
-                temp_giga = GigaChat(credentials=creds, scope="GIGACHAT_API_PERS", verify_ssl_certs=False)
-                models_resp = temp_giga.get_models()
-                available = []
-                for m in models_resp.data:
-                    mid = getattr(m, 'id_', None) or getattr(m, 'id', None) or getattr(m, 'name', None)
-                    if not mid:
-                        match = re.search(r"id_='([^']+)'", str(m)) or re.search(r"id='([^']+)'", str(m))
-                        if match: mid = match.group(1)
-                    if mid and mid not in available: available.append(mid)
-                st.session_state["available_models"] = available
-            except Exception:
-                pass
-                
-    default_models = ["GigaChat", "GigaChat-Max", "GigaChat-Pro", "GigaChat-Plus", "GigaChat-Lite"]
-    models_to_show = st.session_state.get("available_models", default_models)
-    models_to_show = [m for m in models_to_show if m and "object_" not in str(m)]
-    if not models_to_show: models_to_show = default_models
-        
-    model_name = st.selectbox("Выберите модель", models_to_show, index=0)
+    model_name = st.selectbox(
+        "Модель нейросети",
+        ["GigaChat", "GigaChat-Max", "GigaChat-Pro", "GigaChat-Plus"],
+        index=0,
+        help="Если модель выдаёт ошибку 404 — выберите другую"
+    )
     st.session_state["giga_model"] = model_name
 
-def get_credentials():
-    if st.session_state.get("giga_token"): return st.session_state["giga_token"]
-    try:
-        for key in ("GIGACHAT_CREDENTIALS", "GIGACHAT_TOKEN", "GIGACHAT_ACCESS_TOKEN"):
-            if key in st.secrets: return str(st.secrets[key]).strip()
-    except Exception: pass
-    return None
-
-# --- Извлечение текста ---
+# ============================================================
+# ИЗВЛЕЧЕНИЕ ТЕКСТА
+# ============================================================
 def extract_text_from_docx(file_bytes):
     doc = Document(io.BytesIO(file_bytes))
     return "\n".join([p.text for p in doc.paragraphs])
@@ -105,87 +95,97 @@ def extract_text(file):
         try: return file_bytes.decode('utf-8', errors='ignore')
         except: return ""
 
-def extract_number(text):
-    m = re.search(r'[№N]\s*(\d+[а-яА-Я/\-]*)', text[:3000])
-    if m: return m.group(1)
-    m = re.search(r'(?:Договор|Контракт)\s+[№N]?\s*(\d+)', text[:3000], re.IGNORECASE)
-    return m.group(1) if m else "не указан"
-
-def extract_date(text):
-    months = r'января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря'
-    m = re.search(rf'[«"]?(\d{{1,2}})[»"]?\s+({months})\s+(\d{{4}})', text[:3000], re.IGNORECASE)
-    if m: return f"{m.group(1)} {m.group(2)} {m.group(3)} г"
-    m = re.search(r'(\d{2})\.(\d{2})\.(\d{4})', text[:3000])
-    return f"{m.group(1)}.{m.group(2)}.{m.group(3)}" if m else "не указана"
-
-# --- Анализ ---
+# ============================================================
+# ИИ-АНАЛИЗ ПО 10 ПАРАМЕТРАМ
+# ============================================================
 def analyze_contract(text):
     credentials = get_credentials()
-    if not credentials: raise ValueError("Не найден токен GigaChat.")
+    if not credentials:
+        raise ValueError("Не найден токен GigaChat. Добавьте GIGACHAT_CREDENTIALS в Settings → Secrets на Streamlit Cloud.")
 
-    if st.session_state.get("working_model"):
-        models_to_try = [st.session_state["working_model"]]
-    else:
-        selected = st.session_state.get("giga_model", "")
-        available = st.session_state.get("available_models", [])
-        fallback = ["GigaChat", "GigaChat-Max", "GigaChat-Pro", "GigaChat-Plus", "GigaChat-Lite"]
-        models_to_try = []
-        if selected and "object_" not in str(selected): models_to_try.append(selected)
-        for m in available:
-            if m not in models_to_try and "object_" not in str(m): models_to_try.append(m)
-        for m in fallback:
-            if m not in models_to_try: models_to_try.append(m)
-        
-    last_error = None
-    for model in models_to_try:
-        try:
-            giga = GigaChat(credentials=credentials, scope="GIGACHAT_API_PERS", model=model, verify_ssl_certs=False)
-            prompt = f"""Проанализируй текст договора и верни данные СТРОГО в формате:
-ТИП ДОГОВОРА: [тип]
-СУБЪЕКТНЫЙ СОСТАВ: [стороны]
-СУММА: [сумма]
-ИНН: [ИНН]
-ПЕНИ: [пени]
-РИСКИ: [основные риски]
+    model_to_use = st.session_state.get("giga_model", "GigaChat")
+
+    giga = GigaChat(
+        credentials=credentials,
+        scope="GIGACHAT_API_PERS",
+        model=model_to_use,
+        verify_ssl_certs=False
+    )
+    
+    prompt = f"""Проанализируй текст договора как профессиональный юрист и верни данные СТРОГО в следующем формате (каждый параметр с новой строки):
+1. ТИП ДОГОВОРА: [тип договора]
+2. СУБЪЕКТНЫЙ СОСТАВ: [все стороны договора с их ролями]
+3. ПРЕДМЕТ ДОГОВОРА: [краткое описание предмета]
+4. СУММА ДОГОВОРА: [сумма и валюта]
+5. СРОК ДЕЙСТВИЯ: [срок действия или дата окончания]
+6. ПОРЯДОК ОПЛАТЫ: [условия и сроки оплаты]
+7. ОТВЕТСТВЕННОСТЬ СТОРОН: [пени, штрафы, неустойки]
+8. УСЛОВИЯ РАСТОРЖЕНИЯ: [порядок расторжения]
+9. ИНН СТОРОН: [ИНН всех сторон или "отсутствует"]
+10. ЮРИДИЧЕСКИЕ РИСКИ: [основные риски, каждый с новой строки через точку с запятой]
+
+ВАЖНО: отвечай только по фактам из текста. Если информации нет — пиши "не указано в тексте".
 
 ТЕКСТ ДОГОВОРА:
 {text[:15000]}"""
-            response = giga.chat(prompt)
-            st.session_state["working_model"] = model
-            return response.choices[0].message.content
-        except Exception as e:
-            last_error = str(e)
-            if "No such model" in last_error or "404" in last_error: continue
-            else: raise
-    raise ValueError(f"Ни одна модель не подошла. Ошибка: {last_error}")
+    
+    response = giga.chat(prompt)
+    return response.choices[0].message.content
 
+# ============================================================
+# ПАРСИНГ 10 ПАРАМЕТРОВ
+# ============================================================
 def empty_parsed():
-    return {"Тип договора": "не определён", "Субъектный состав": "не определён",
-            "Сумма": "не указана", "ИНН": "0", "Пени": "не указаны", "Риски": "не найдены"}
+    return {
+        "Тип договора": "не определён",
+        "Субъектный состав": "не определён",
+        "Предмет договора": "не указан",
+        "Сумма договора": "не указана",
+        "Срок действия": "не указан",
+        "Порядок оплаты": "не указан",
+        "Ответственность сторон": "не указана",
+        "Условия расторжения": "не указаны",
+        "ИНН сторон": "0",
+        "Юридические риски": "не найдены"
+    }
 
 def parse_response(ai_text):
     data = empty_parsed()
     if not ai_text: return data
+    
     for line in ai_text.split("\n"):
         line = line.strip().lstrip("-•* ").replace("**", "")
+        # Убираем номер пункта (например "1. " или "1) ")
+        line = re.sub(r'^\d+[.)]\s*', '', line)
+        
         if ":" not in line: continue
         key, val = line.split(":", 1)
-        key, val = key.strip().upper(), val.strip()
+        key = key.strip().upper()
+        val = val.strip()
         if not val: continue
+        
         if "ТИП" in key: data["Тип договора"] = val
-        elif "СУБЪЕКТ" in key or "СОСТАВ" in key or "СТОРОН" in key: data["Субъектный состав"] = val
-        elif "СУММА" in key or "ЦЕНА" in key: data["Сумма"] = val
-        elif "ИНН" in key: data["ИНН"] = val
-        elif "ПЕН" in key or "ШТРАФ" in key: data["Пени"] = val
-        elif "РИСК" in key: data["Риски"] = val
+        elif "СУБЪЕКТ" in key or "СОСТАВ" in key or "СТОРОН" in key and "ИНН" not in key: data["Субъектный состав"] = val
+        elif "ПРЕДМЕТ" in key: data["Предмет договора"] = val
+        elif "СУММА" in key or "ЦЕНА" in key: data["Сумма договора"] = val
+        elif "СРОК" in key: data["Срок действия"] = val
+        elif "ОПЛАТ" in key: data["Порядок оплаты"] = val
+        elif "ОТВЕТСТВЕННОСТЬ" in key or "ПЕН" in key or "ШТРАФ" in key or "НЕУСТОЙК" in key: data["Ответственность сторон"] = val
+        elif "РАСТОРЖ" in key: data["Условия расторжения"] = val
+        elif "ИНН" in key: data["ИНН сторон"] = val
+        elif "РИСК" in key: data["Юридические риски"] = val
+    
     return data
 
-# --- ГЕНЕРАЦИЯ ОТЧЕТОВ И ПРЕЗЕНТАЦИЙ ---
+# ============================================================
+# ГЕНЕРАЦИЯ ОТЧЁТОВ (DOCX и PPTX)
+# ============================================================
 def generate_docx_report(fname, parsed, ai_response):
     doc = Document()
-    doc.add_heading(f'Отчёт по анализу: {fname}', 0)
+    doc.add_heading(f'Отчёт по анализу договора: {fname}', 0)
+    doc.add_paragraph('Подготовлено: ИИ-Анализатор договоров')
     
-    doc.add_heading('📋 Основные параметры', level=1)
+    doc.add_heading('📋 Параметры анализа', level=1)
     table = doc.add_table(rows=1, cols=2)
     table.style = 'Table Grid'
     hdr_cells = table.rows[0].cells
@@ -193,23 +193,17 @@ def generate_docx_report(fname, parsed, ai_response):
     hdr_cells[1].text = 'Значение'
     
     for key, val in parsed.items():
-        if key != 'Риски':
+        if key != "Юридические риски":
             row_cells = table.add_row().cells
             row_cells[0].text = key
             row_cells[1].text = str(val)
-            
-    if parsed.get("Тип договора") and parsed["Тип договора"] != "не определён":
-        doc.add_paragraph(f"\nТип договора: {parsed['Тип договора']}")
-    if parsed.get("Субъектный состав") and parsed["Субъектный состав"] != "не определён":
-        doc.add_paragraph(f"Субъектный состав: {parsed['Субъектный состав']}")
-            
-    doc.add_heading('🤖 ИИ-анализ', level=1)
+    
+    doc.add_heading('⚠️ Юридические риски', level=1)
+    doc.add_paragraph(parsed.get("Юридические риски", "не найдены"))
+    
+    doc.add_heading('🤖 Полный ИИ-анализ', level=1)
     doc.add_paragraph(ai_response if ai_response else "Анализ не выполнен")
     
-    if parsed.get("Риски") and parsed["Риски"] != "не найдены":
-        doc.add_heading('⚠️ Юридические риски', level=1)
-        doc.add_paragraph(parsed["Риски"])
-        
     buffer = io.BytesIO()
     doc.save(buffer)
     buffer.seek(0)
@@ -219,62 +213,67 @@ def generate_pptx_report(fname, parsed, ai_response):
     prs = Presentation()
     
     # Слайд 1: Титульный
-    title_slide_layout = prs.slide_layouts[0]
-    slide = prs.slides.add_slide(title_slide_layout)
+    slide = prs.slides.add_slide(prs.slide_layouts[0])
     slide.shapes.title.text = f"Анализ договора\n{fname}"
     slide.placeholders[1].text = "Подготовлено ИИ-Анализатором"
     
     # Слайд 2: Основные параметры
-    bullet_slide_layout = prs.slide_layouts[1]
-    slide = prs.slides.add_slide(bullet_slide_layout)
+    slide = prs.slides.add_slide(prs.slide_layouts[1])
     slide.shapes.title.text = "📋 Основные параметры"
     tf = slide.placeholders[1].text_frame
-    
-    keys_to_show = ["Номер", "Дата", "Сумма", "ИНН", "Пени"]
-    for i, key in enumerate(keys_to_show):
-        if i == 0:
-            tf.text = f"{key}: {parsed.get(key, 'не указано')}"
+    keys_slide2 = ["Тип договора", "Субъектный состав", "Предмет договора", "Сумма договора", "Срок действия"]
+    for i, key in enumerate(keys_slide2):
+        if i == 0: tf.text = f"{key}: {parsed.get(key, 'не указано')}"
         else:
             p = tf.add_paragraph()
             p.text = f"{key}: {parsed.get(key, 'не указано')}"
-            
-    # Слайд 3: Стороны и тип
-    slide = prs.slides.add_slide(bullet_slide_layout)
-    slide.shapes.title.text = "👥 Тип и стороны"
+    
+    # Слайд 3: Условия
+    slide = prs.slides.add_slide(prs.slide_layouts[1])
+    slide.shapes.title.text = "📄 Условия договора"
     tf = slide.placeholders[1].text_frame
-    tf.text = f"Тип договора: {parsed.get('Тип договора', 'не определен')}"
-    p = tf.add_paragraph()
-    p.text = f"Состав: {parsed.get('Субъектный состав', 'не определен')}"
+    keys_slide3 = ["Порядок оплаты", "Ответственность сторон", "Условия расторжения", "ИНН сторон"]
+    for i, key in enumerate(keys_slide3):
+        if i == 0: tf.text = f"{key}: {parsed.get(key, 'не указано')}"
+        else:
+            p = tf.add_paragraph()
+            p.text = f"{key}: {parsed.get(key, 'не указано')}"
     
     # Слайд 4: Риски
-    if parsed.get("Риски") and parsed["Риски"] != "не найдены":
-        slide = prs.slides.add_slide(bullet_slide_layout)
-        slide.shapes.title.text = "⚠️ Юридические риски"
-        slide.placeholders[1].text_frame.text = parsed["Риски"]
-        
+    slide = prs.slides.add_slide(prs.slide_layouts[1])
+    slide.shapes.title.text = "⚠️ Юридические риски"
+    slide.placeholders[1].text_frame.text = parsed.get("Юридические риски", "не найдены")
+    
     buffer = io.BytesIO()
     prs.save(buffer)
     buffer.seek(0)
     return buffer
 
-# --- Основной интерфейс ---
+# ============================================================
+# ОСНОВНОЙ ИНТЕРФЕЙС
+# ============================================================
 st.markdown("---")
 st.subheader("📤 Загрузка договоров")
-uploaded_files = st.file_uploader("Перетащите файлы", type=['docx', 'pdf', 'pptx', 'txt', 'png', 'jpg', 'jpeg'], accept_multiple_files=True)
+uploaded_files = st.file_uploader(
+    "Перетащите файлы или нажмите для выбора",
+    type=['docx', 'pdf', 'pptx', 'txt', 'png', 'jpg', 'jpeg'],
+    accept_multiple_files=True
+)
 
 if uploaded_files:
     st.success(f"✅ Загружено файлов: {len(uploaded_files)}")
+    st.markdown(f"### 📂 Список файлов ({len(uploaded_files)})")
+
     results, processed = [], 0
 
     for file in uploaded_files:
         st.markdown(f"📄 **{file.name}**")
         text = extract_text(file)
         if not text.strip():
-            st.warning("⚠️ Не удалось извлечь текст.")
+            st.warning("⚠️ Не удалось извлечь текст из файла.")
             continue
 
-        model_hint = st.session_state.get('working_model', 'подбираю модель...')
-        with st.spinner(f"🤖 ({model_hint}) анализирует документ..."):
+        with st.spinner("🤖 ИИ анализирует документ по 10 параметрам..."):
             ai_response, ai_error = None, None
             try:
                 ai_response = analyze_contract(text)
@@ -282,34 +281,37 @@ if uploaded_files:
                 ai_error = str(e)
 
         parsed = parse_response(ai_response)
-        results.append((file.name, parsed, ai_response, ai_error, text))
+        results.append((file.name, parsed, ai_response, ai_error))
         processed += 1
 
     if processed:
         st.balloons()
-        st.success(f"🎉 Готово! Проанализировано: {processed} договоров")
+        st.success(f"🎉 Готово! Проанализировано: {processed} договоров по 10 параметрам")
+
         st.markdown("---")
         st.subheader("📊 Результаты анализа")
 
-        for fname, parsed, ai_response, ai_error, raw_text in results:
+        for fname, parsed, ai_response, ai_error in results:
             st.markdown(f"#### 📄 {fname}")
-            c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Номер", extract_number(raw_text))
-            c2.metric("Дата", extract_date(raw_text))
-            c3.metric("Сумма", parsed["Сумма"])
-            c4.metric("ИНН", parsed["ИНН"])
-            c5.metric("Пени", parsed["Пени"])
-
-            st.markdown(f"📋 **Тип договора:** {parsed['Тип договора']}")
-            st.markdown(f"👥 🏢 **Субъектный состав:** {parsed['Субъектный состав']}")
-
-            if ai_response:
-                with st.expander("🤖 ИИ-анализ и Риски", expanded=True):
-                    st.info(ai_response)
+            
             if ai_error:
-                st.error(f"❌ Ошибка: {ai_error}")
-
-            # КНОПКИ СКАЧИВАНИЯ ОТЧЕТОВ И ПРЕЗЕНТАЦИЙ
+                st.error(f"❌ Ошибка анализа: {ai_error}")
+                st.markdown("---")
+                continue
+            
+            # Вывод всех 10 параметров в виде таблицы
+            param_df = [[k, v] for k, v in parsed.items() if k != "Юридические риски"]
+            st.table(param_df)
+            
+            # Риски отдельно
+            with st.expander("⚠️ Юридические риски", expanded=True):
+                st.warning(parsed.get("Юридические риски", "не найдены"))
+            
+            # Полный ответ ИИ
+            with st.expander("🤖 Полный ответ ИИ"):
+                st.info(ai_response)
+            
+            # Кнопки скачивания
             st.markdown("##### 📥 Скачать результаты:")
             col1, col2, col3 = st.columns(3)
             
