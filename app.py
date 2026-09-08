@@ -7,7 +7,7 @@ import re
 from docx import Document
 import PyPDF2
 from pptx import Presentation
-import pymupdf  # современная замена fitz
+import pymupdf
 from PIL import Image
 import pytesseract
 
@@ -19,7 +19,7 @@ st.markdown("📄 **Загрузите договоры** → 🤖 **ИИ най
 
 
 # ============================================================
-# 1. АВТОПОДГРУЗКА ТОКЕНА ИЗ SECRETS
+# АВТОПОДГРУЗКА ТОКЕНА
 # ============================================================
 def get_credentials():
     try:
@@ -35,9 +35,6 @@ def get_credentials():
     return None
 
 
-# ============================================================
-# 2. САЙДБАР
-# ============================================================
 with st.sidebar:
     st.header("⚙️ Настройки")
     creds = get_credentials()
@@ -45,7 +42,7 @@ with st.sidebar:
         st.success("✅ Токен GigaChat загружен автоматически")
     else:
         st.warning("⚠️ Токен не найден. Добавьте GIGACHAT_CREDENTIALS в Settings → Secrets")
-    
+
     st.markdown("---")
     model_name = st.selectbox(
         "Модель нейросети (код сам подберёт рабочую)",
@@ -56,11 +53,40 @@ with st.sidebar:
 
 
 # ============================================================
-# 3. ИЗВЛЕЧЕНИЕ ТЕКСТА ИЗ ФАЙЛОВ
+# ИЗВЛЕЧЕНИЕ ТЕКСТА (DOCX, DOC, PDF, PPTX, картинки, TXT)
 # ============================================================
 def extract_text_from_docx(file_bytes):
     doc = Document(io.BytesIO(file_bytes))
     return "\n".join([p.text for p in doc.paragraphs])
+
+
+def extract_text_from_doc(file_bytes):
+    """Старый формат .doc (Word 97-2003). Пытаемся вытащить текст любыми способами."""
+    # 1) Иногда под маской .doc лежит обычный docx (zip)
+    if file_bytes[:2] == b'PK':
+        return extract_text_from_docx(file_bytes)
+    # 2) Иногда это RTF
+    if file_bytes[:5] == b'{\\rtf':
+        raw = file_bytes.decode('cp1251', errors='ignore')
+        raw = re.sub(r'\\[a-z]+-?\d* ?', ' ', raw)
+        raw = re.sub(r'[{}]', '', raw)
+        return raw
+    # 3) Иногда это HTML
+    low = file_bytes[:2000].lower()
+    if b'<html' in low or b'<!doctype' in low:
+        raw = file_bytes.decode('cp1251', errors='ignore')
+        raw = re.sub(r'<[^>]+>', ' ', raw)
+        return raw
+    # 4) Настоящий бинарный .doc — вытаскиваем читаемые куски текста
+    candidates = []
+    for enc in ('cp1251', 'utf-16-le', 'utf-8'):
+        txt = file_bytes.decode(enc, errors='ignore')
+        runs = re.findall(r'[A-Za-zА-Яа-яЁё0-9.,;:()№%"\-\s]{15,}', txt)
+        joined = '\n'.join(r.strip() for r in runs if len(r.strip()) >= 15)
+        letters = len(re.findall(r'[A-Za-zА-Яа-яЁё]', joined))
+        candidates.append((letters, joined))
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1] if candidates else ''
 
 
 def extract_text_from_pdf(file_bytes):
@@ -97,6 +123,8 @@ def extract_text(file):
     filename = file.name.lower()
     if filename.endswith('.docx'):
         return extract_text_from_docx(file_bytes)
+    elif filename.endswith('.doc'):
+        return extract_text_from_doc(file_bytes)
     elif filename.endswith('.pdf'):
         return extract_text_from_pdf(file_bytes)
     elif filename.endswith('.pptx'):
@@ -114,7 +142,7 @@ def extract_text(file):
 
 
 # ============================================================
-# 4. АНАЛИЗ ДОГОВОРА ЧЕРЕЗ GIGACHAT (С АВТОПОДБОРОМ МОДЕЛИ)
+# АНАЛИЗ ЧЕРЕЗ GIGACHAT (С АВТОПОДБОРОМ МОДЕЛИ)
 # ============================================================
 def analyze_contract(text):
     credentials = get_credentials()
@@ -122,25 +150,12 @@ def analyze_contract(text):
         raise ValueError("Не найден токен GigaChat. Добавьте GIGACHAT_CREDENTIALS в Settings → Secrets.")
 
     selected = st.session_state.get("giga_model", "GigaChat-2-Pro")
-    
-    # Все возможные актуальные модели Сбера (2025-2026)
-    fallback_models = [
-        selected,
-        "GigaChat-2-Pro",
-        "GigaChat-2-Max",
-        "GigaChat-2",
-        "GigaChat-Max",
-        "GigaChat-Pro",
-        "GigaChat",
-        "GigaChat-Lite",
-        "GigaChat-Ultra"
-    ]
-    # Убираем дубликаты, сохраняя порядок
-    models_to_try = list(dict.fromkeys(fallback_models))
-    
-    prompt = f"""Проанализируй текст договора как профессиональный юрист и верни данные СТРОГО в следующем формате (каждый параметр с новой строки):
+    fallback = [selected, "GigaChat-2-Pro", "GigaChat-2-Max", "GigaChat-Max", "GigaChat-Pro", "GigaChat"]
+    models_to_try = list(dict.fromkeys(fallback))
+
+    prompt = f"""Проанализируй текст договора и верни данные СТРОГО в следующем формате (каждый параметр с новой строки):
 1. ТИП ДОГОВОРА: [тип договора]
-2. СУБЪЕКТНЫЙ СОСТАВ: [все стороны договора с их ролями (Заказчик/Исполнитель/Поставщик и т.д.)]
+2. СУБЪЕКТНЫЙ СОСТАВ: [все стороны договора с их ролями]
 3. ПРЕДМЕТ ДОГОВОРА: [краткое описание предмета]
 4. СУММА ДОГОВОРА: [сумма и валюта]
 5. СРОК ДЕЙСТВИЯ: [срок действия или дата окончания]
@@ -150,7 +165,7 @@ def analyze_contract(text):
 9. ИНН СТОРОН: [ИНН всех сторон или "отсутствует"]
 10. ЮРИДИЧЕСКИЕ РИСКИ: [основные риски, каждый через точку с запятой]
 
-ВАЖНО: отвечай только по фактам из текста. Если информации нет — пиши "не указано в тексте". В поле "Субъектный состав" пиши ТОЛЬКО названия компаний и их роли, НЕ пиши туда условия ответственности.
+ВАЖНО: отвечай только по фактам из текста. Если информации нет — пиши "не указано в тексте".
 
 ТЕКСТ ДОГОВОРА:
 {text[:15000]}"""
@@ -173,25 +188,16 @@ def analyze_contract(text):
                 continue
             else:
                 raise
-    
     raise ValueError(f"Ни одна модель не подошла. Ошибка: {last_error}")
 
 
-# ============================================================
-# 5. ПАРСИНГ ОТВЕТА ИИ (10 ПАРАМЕТРОВ)
-# ============================================================
 def empty_parsed():
     return {
-        "Тип договора": "не определён",
-        "Субъектный состав": "не определён",
-        "Предмет договора": "не указан",
-        "Сумма договора": "не указана",
-        "Срок действия": "не указан",
-        "Порядок оплаты": "не указан",
-        "Ответственность сторон": "не указана",
-        "Условия расторжения": "не указаны",
-        "ИНН сторон": "отсутствует",
-        "Юридические риски": "не найдены"
+        "Тип договора": "не определён", "Субъектный состав": "не определён",
+        "Предмет договора": "не указан", "Сумма договора": "не указана",
+        "Срок действия": "не указан", "Порядок оплаты": "не указан",
+        "Ответственность сторон": "не указана", "Условия расторжения": "не указаны",
+        "ИНН сторон": "отсутствует", "Юридические риски": "не найдены"
     }
 
 
@@ -199,7 +205,6 @@ def parse_response(ai_text):
     data = empty_parsed()
     if not ai_text:
         return data
-    
     for line in ai_text.split("\n"):
         line = line.strip().lstrip("-•* ").replace("**", "")
         line = re.sub(r'^\d+[.)]\s*', '', line)
@@ -210,14 +215,13 @@ def parse_response(ai_text):
         val = val.strip()
         if not val:
             continue
-        
         if "ТИП" in key:
             data["Тип договора"] = val
-        elif "СУБЪЕКТ" in key or ("СОСТАВ" in key and "ИНН" not in key):
+        elif "СУБЪЕКТ" in key or "СОСТАВ" in key:
             data["Субъектный состав"] = val
         elif "ПРЕДМЕТ" in key:
             data["Предмет договора"] = val
-        elif "СУММА" in key or ("ЦЕНА" in key and "РАСТОРЖ" not in key):
+        elif "СУММА" in key or "ЦЕНА" in key:
             data["Сумма договора"] = val
         elif "СРОК" in key:
             data["Срок действия"] = val
@@ -235,50 +239,38 @@ def parse_response(ai_text):
 
 
 # ============================================================
-# 6. ГЕНЕРАЦИЯ WORD-ОТЧЁТА
+# ГЕНЕРАЦИЯ ОТЧЁТОВ
 # ============================================================
 def generate_docx_report(fname, parsed, ai_response):
     doc = Document()
     doc.add_heading(f'Отчёт по анализу: {fname}', 0)
-    doc.add_paragraph('Подготовлено: ИИ-Анализатор договоров')
-    
     doc.add_heading('📋 Параметры анализа (10 пунктов)', level=1)
     table = doc.add_table(rows=1, cols=2)
     table.style = 'Table Grid'
-    hdr_cells = table.rows[0].cells
-    hdr_cells[0].text = 'Параметр'
-    hdr_cells[1].text = 'Значение'
-    
+    hdr = table.rows[0].cells
+    hdr[0].text = 'Параметр'
+    hdr[1].text = 'Значение'
     for key, val in parsed.items():
         if key != "Юридические риски":
-            row_cells = table.add_row().cells
-            row_cells[0].text = key
-            row_cells[1].text = str(val)
-    
+            cells = table.add_row().cells
+            cells[0].text = key
+            cells[1].text = str(val)
     doc.add_heading('⚠️ Юридические риски', level=1)
     doc.add_paragraph(parsed.get("Юридические риски", "не найдены"))
-    
     doc.add_heading('🤖 Полный ИИ-анализ', level=1)
     doc.add_paragraph(ai_response if ai_response else "Анализ не выполнен")
-    
     buffer = io.BytesIO()
     doc.save(buffer)
     buffer.seek(0)
     return buffer
 
 
-# ============================================================
-# 7. ГЕНЕРАЦИЯ ПРЕЗЕНТАЦИИ PPTX
-# ============================================================
 def generate_pptx_report(fname, parsed, ai_response):
     prs = Presentation()
-    
-    # Слайд 1: Титульный
     slide = prs.slides.add_slide(prs.slide_layouts[0])
     slide.shapes.title.text = f"Анализ договора\n{fname}"
     slide.placeholders[1].text = "Подготовлено ИИ-Анализатором (10 параметров)"
-    
-    # Слайд 2: Основные параметры
+
     slide = prs.slides.add_slide(prs.slide_layouts[1])
     slide.shapes.title.text = "📋 Основные параметры"
     tf = slide.placeholders[1].text_frame
@@ -288,8 +280,7 @@ def generate_pptx_report(fname, parsed, ai_response):
         else:
             p = tf.add_paragraph()
             p.text = f"{key}: {parsed.get(key, 'не указано')}"
-    
-    # Слайд 3: Условия
+
     slide = prs.slides.add_slide(prs.slide_layouts[1])
     slide.shapes.title.text = "📄 Условия договора"
     tf = slide.placeholders[1].text_frame
@@ -299,12 +290,11 @@ def generate_pptx_report(fname, parsed, ai_response):
         else:
             p = tf.add_paragraph()
             p.text = f"{key}: {parsed.get(key, 'не указано')}"
-    
-    # Слайд 4: Риски
+
     slide = prs.slides.add_slide(prs.slide_layouts[1])
     slide.shapes.title.text = "⚠️ Юридические риски"
     slide.placeholders[1].text_frame.text = parsed.get("Юридические риски", "не найдены")
-    
+
     buffer = io.BytesIO()
     prs.save(buffer)
     buffer.seek(0)
@@ -312,13 +302,13 @@ def generate_pptx_report(fname, parsed, ai_response):
 
 
 # ============================================================
-# 8. ОСНОВНОЙ ИНТЕРФЕЙС
+# ОСНОВНОЙ ИНТЕРФЕЙС
 # ============================================================
 st.markdown("---")
 st.subheader("📤 Загрузка договоров")
 uploaded_files = st.file_uploader(
     "Перетащите файлы",
-    type=['docx', 'pdf', 'pptx', 'txt', 'png', 'jpg', 'jpeg'],
+    type=['docx', 'doc', 'pdf', 'pptx', 'txt', 'png', 'jpg', 'jpeg'],
     accept_multiple_files=True
 )
 
@@ -330,14 +320,18 @@ if uploaded_files:
     for file in uploaded_files:
         st.markdown(f"📄 **{file.name}**")
         text = extract_text(file)
-        if not text.strip():
-            st.warning("⚠️ Не удалось извлечь текст.")
+
+        if not text.strip() or len(text.strip()) < 40:
+            st.warning(
+                "⚠️ Не удалось извлечь текст из файла. Если это старый формат **.doc**, "
+                "откройте его в Word и сохраните как **.docx** (Файл → Сохранить как → Тип файла: .docx), "
+                "затем загрузите снова."
+            )
             continue
 
-        model_hint = st.session_state.get('working_model', 'подбираю модель...')
+        model_hint = st.session_state.get('working_model', st.session_state.get('giga_model', '...'))
         with st.spinner(f"🤖 ({model_hint}) анализирует документ по 10 параметрам..."):
-            ai_response = None
-            ai_error = None
+            ai_response, ai_error = None, None
             try:
                 ai_response = analyze_contract(text)
             except Exception as e:
@@ -355,46 +349,41 @@ if uploaded_files:
 
         for fname, parsed, ai_response, ai_error in results:
             st.markdown(f"#### 📄 {fname}")
-            
             if ai_error:
-                st.error(f"❌ Ошибка: {ai_error}")
+                st.error(f"❌ Ошибка анализа: {ai_error}")
                 st.markdown("---")
                 continue
-            
-            # Таблица с 9 параметрами
+
             param_df = [[k, v] for k, v in parsed.items() if k != "Юридические риски"]
             st.table(param_df)
-            
+
             with st.expander("⚠️ Юридические риски", expanded=True):
                 st.warning(parsed.get("Юридические риски", "не найдены"))
             with st.expander("🤖 Полный ответ ИИ"):
                 st.info(ai_response)
-            
+
             st.markdown("##### 📥 Скачать результаты:")
             col1, col2, col3 = st.columns(3)
-            
             with col1:
-                docx_buffer = generate_docx_report(fname, parsed, ai_response)
                 st.download_button(
-                    label="📄 Отчёт (Word)",
-                    data=docx_buffer,
+                    "📄 Отчёт (Word)",
+                    generate_docx_report(fname, parsed, ai_response),
                     file_name=f"Report_{fname}.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     use_container_width=True
                 )
             with col2:
-                pptx_buffer = generate_pptx_report(fname, parsed, ai_response)
                 st.download_button(
-                    label="📊 Презентация (PPTX)",
-                    data=pptx_buffer,
+                    "📊 Презентация (PPTX)",
+                    generate_pptx_report(fname, parsed, ai_response),
                     file_name=f"Presentation_{fname}.pptx",
                     mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                     use_container_width=True
                 )
             with col3:
                 st.download_button(
-                    label="📝 Текст (TXT)",
-                    data=f"Отчёт по {fname}\n\n{ai_response or ''}".encode('utf-8'),
+                    "📝 Текст (TXT)",
+                    f"Отчёт по {fname}\n\n{ai_response or ''}".encode('utf-8'),
                     file_name=f"Report_{fname}.txt",
                     mime="text/plain",
                     use_container_width=True
