@@ -1,5 +1,6 @@
 import streamlit as st
 from gigachat import GigaChat
+from gigachat.models import ChatCompletionRequest, ChatMessage
 import os
 import io
 import re
@@ -9,13 +10,14 @@ import PyPDF2
 from pptx import Presentation
 import pymupdf
 from PIL import Image
-import pytesseract
 
 st.set_page_config(page_title="ИИ-Анализатор договоров", page_icon="🤖", layout="wide")
 
 st.title("🤖 ИИ-Анализатор договоров")
 st.markdown("Автоматический анализ договоров с помощью искусственного интеллекта")
 st.markdown("📄 **Загрузите договоры** → 🤖 **ИИ найдёт риски** → 📊 **Получите отчёты**")
+
+MAX_OCR_PAGES = 8  # максимум страниц скана для распознавания
 
 
 # ============================================================
@@ -53,40 +55,11 @@ with st.sidebar:
 
 
 # ============================================================
-# ИЗВЛЕЧЕНИЕ ТЕКСТА (DOCX, DOC, PDF, PPTX, картинки, TXT)
+# ИЗВЛЕЧЕНИЕ ТЕКСТА (обычные файлы)
 # ============================================================
 def extract_text_from_docx(file_bytes):
     doc = Document(io.BytesIO(file_bytes))
     return "\n".join([p.text for p in doc.paragraphs])
-
-
-def extract_text_from_doc(file_bytes):
-    """Старый формат .doc (Word 97-2003). Пытаемся вытащить текст любыми способами."""
-    # 1) Иногда под маской .doc лежит обычный docx (zip)
-    if file_bytes[:2] == b'PK':
-        return extract_text_from_docx(file_bytes)
-    # 2) Иногда это RTF
-    if file_bytes[:5] == b'{\\rtf':
-        raw = file_bytes.decode('cp1251', errors='ignore')
-        raw = re.sub(r'\\[a-z]+-?\d* ?', ' ', raw)
-        raw = re.sub(r'[{}]', '', raw)
-        return raw
-    # 3) Иногда это HTML
-    low = file_bytes[:2000].lower()
-    if b'<html' in low or b'<!doctype' in low:
-        raw = file_bytes.decode('cp1251', errors='ignore')
-        raw = re.sub(r'<[^>]+>', ' ', raw)
-        return raw
-    # 4) Настоящий бинарный .doc — вытаскиваем читаемые куски текста
-    candidates = []
-    for enc in ('cp1251', 'utf-16-le', 'utf-8'):
-        txt = file_bytes.decode(enc, errors='ignore')
-        runs = re.findall(r'[A-Za-zА-Яа-яЁё0-9.,;:()№%"\-\s]{15,}', txt)
-        joined = '\n'.join(r.strip() for r in runs if len(r.strip()) >= 15)
-        letters = len(re.findall(r'[A-Za-zА-Яа-яЁё]', joined))
-        candidates.append((letters, joined))
-    candidates.sort(key=lambda x: x[0], reverse=True)
-    return candidates[0][1] if candidates else ''
 
 
 def extract_text_from_pdf(file_bytes):
@@ -123,17 +96,10 @@ def extract_text(file):
     filename = file.name.lower()
     if filename.endswith('.docx'):
         return extract_text_from_docx(file_bytes)
-    elif filename.endswith('.doc'):
-        return extract_text_from_doc(file_bytes)
     elif filename.endswith('.pdf'):
         return extract_text_from_pdf(file_bytes)
     elif filename.endswith('.pptx'):
         return extract_text_from_pptx(file_bytes)
-    elif filename.endswith(('.png', '.jpg', '.jpeg', '.tiff')):
-        try:
-            return pytesseract.image_to_string(Image.open(io.BytesIO(file_bytes)), lang='rus+eng')
-        except Exception:
-            return ""
     else:
         try:
             return file_bytes.decode('utf-8', errors='ignore')
@@ -142,7 +108,99 @@ def extract_text(file):
 
 
 # ============================================================
-# АНАЛИЗ ЧЕРЕЗ GIGACHAT (С АВТОПОДБОРОМ МОДЕЛИ)
+# OCR СКАНОВ ЧЕРЕЗ ЗРЕНИЕ GIGACHAT (Vision)
+# ============================================================
+def _response_text(response):
+    """Универсально достаём текст ответа (новый и старый формат SDK)."""
+    try:
+        for part in response.messages[0].content:
+            if getattr(part, "text", None):
+                return part.text
+    except Exception:
+        pass
+    try:
+        return response.choices[0].message.content
+    except Exception:
+        return ""
+
+
+def _pages_as_jpeg(file_bytes, filename):
+    """Превращаем PDF или картинку в список JPEG-байтов страниц."""
+    pages = []
+    if filename.lower().endswith('.pdf'):
+        doc = pymupdf.open(stream=file_bytes, filetype="pdf")
+        for page in doc:
+            if len(pages) >= MAX_OCR_PAGES:
+                break
+            pix = page.get_pixmap(dpi=150)
+            pages.append(pix.tobytes("jpeg"))
+    elif filename.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp')):
+        img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        pages.append(buf.getvalue())
+    return pages
+
+
+def vision_ocr(file_bytes, filename):
+    """Распознаёт скан: грузит страницы как файлы и просит модель переписать текст."""
+    credentials = get_credentials()
+    if not credentials:
+        return ""
+    pages = _pages_as_jpeg(file_bytes, filename)
+    if not pages:
+        return ""
+
+    texts = []
+    progress = st.progress(0.0)
+    try:
+        for vision_model in ("GigaChat-2-Pro", "GigaChat-2-Max"):
+            try:
+                with GigaChat(
+                    credentials=credentials,
+                    scope="GIGACHAT_API_PERS",
+                    model=vision_model,
+                    verify_ssl_certs=False,
+                    timeout=300,
+                ) as client:
+                    texts = []
+                    for i, img in enumerate(pages):
+                        progress.progress(
+                            (i / len(pages)),
+                            text=f"📷 Распознаю страницу {i + 1} из {len(pages)} ({vision_model})...",
+                        )
+                        uploaded = client.upload_file(file=(f"page_{i + 1}.jpg", img))
+                        resp = client.chat.create(
+                            ChatCompletionRequest(
+                                messages=[
+                                    ChatMessage(
+                                        role="user",
+                                        content=[
+                                            {"text": "Ты — система распознавания текста. "
+                                                     "Дословно перепиши ВЕСЬ текст с изображения "
+                                                     "(страница договора): цифры, реквизиты, пункты. "
+                                                     "Без комментариев и пояснений."},
+                                            {"files": [{"id": uploaded.id_}]},
+                                        ],
+                                    )
+                                ]
+                            )
+                        )
+                        texts.append(_response_text(resp))
+                        try:
+                            client.delete_file(uploaded.id_)
+                        except Exception:
+                            pass
+                    break  # модель сработала — выходим из перебора
+            except Exception:
+                continue
+    finally:
+        progress.progress(1.0, text="✅ Распознавание завершено")
+    return "\n\n".join(t for t in texts if t and t.strip())
+
+
+# ============================================================
+# АНАЛИЗ ДОГОВОРА (10 параметров, автоподбор модели)
 # ============================================================
 def analyze_contract(text):
     credentials = get_credentials()
@@ -153,7 +211,7 @@ def analyze_contract(text):
     fallback = [selected, "GigaChat-2-Pro", "GigaChat-2-Max", "GigaChat-Max", "GigaChat-Pro", "GigaChat"]
     models_to_try = list(dict.fromkeys(fallback))
 
-    prompt = f"""Проанализируй текст договора и верни данные СТРОГО в следующем формате (каждый параметр с новой строки):
+    prompt = f"""Проанализируй текст договора как профессиональный юрист и верни данные СТРОГО в следующем формате (каждый параметр с новой строки):
 1. ТИП ДОГОВОРА: [тип договора]
 2. СУБЪЕКТНЫЙ СОСТАВ: [все стороны договора с их ролями]
 3. ПРЕДМЕТ ДОГОВОРА: [краткое описание предмета]
@@ -177,7 +235,8 @@ def analyze_contract(text):
                 credentials=credentials,
                 scope="GIGACHAT_API_PERS",
                 model=model,
-                verify_ssl_certs=False
+                verify_ssl_certs=False,
+                timeout=300,
             )
             response = giga.chat(prompt)
             st.session_state["working_model"] = model
@@ -211,8 +270,7 @@ def parse_response(ai_text):
         if ":" not in line:
             continue
         key, val = line.split(":", 1)
-        key = key.strip().upper()
-        val = val.strip()
+        key, val = key.strip().upper(), val.strip()
         if not val:
             continue
         if "ТИП" in key:
@@ -307,7 +365,7 @@ def generate_pptx_report(fname, parsed, ai_response):
 st.markdown("---")
 st.subheader("📤 Загрузка договоров")
 uploaded_files = st.file_uploader(
-    "Перетащите файлы",
+    "Перетащите файлы (включая сканы PDF и фото)",
     type=['docx', 'doc', 'pdf', 'pptx', 'txt', 'png', 'jpg', 'jpeg'],
     accept_multiple_files=True
 )
@@ -319,18 +377,21 @@ if uploaded_files:
 
     for file in uploaded_files:
         st.markdown(f"📄 **{file.name}**")
+        file_bytes = file.getvalue()
         text = extract_text(file)
 
-        if not text.strip() or len(text.strip()) < 40:
-            st.warning(
-                "⚠️ Не удалось извлечь текст из файла. Если это старый формат **.doc**, "
-                "откройте его в Word и сохраните как **.docx** (Файл → Сохранить как → Тип файла: .docx), "
-                "затем загрузите снова."
-            )
+        # Если текста нет — пробуем распознать скан через Vision
+        if len(text.strip()) < 40:
+            text = vision_ocr(file_bytes, file.name)
+            if text.strip():
+                st.info("📷 Файл распознан как скан: текст извлечён через GigaChat Vision.")
+
+        if not text.strip():
+            st.warning("⚠️ Не удалось извлечь текст даже через распознавание сканов. "
+                       "Попробуйте сохранить файл как .docx или загрузить более чёткий скан.")
             continue
 
-        model_hint = st.session_state.get('working_model', st.session_state.get('giga_model', '...'))
-        with st.spinner(f"🤖 ({model_hint}) анализирует документ по 10 параметрам..."):
+        with st.spinner("🤖 ИИ анализирует документ по 10 параметрам..."):
             ai_response, ai_error = None, None
             try:
                 ai_response = analyze_contract(text)
