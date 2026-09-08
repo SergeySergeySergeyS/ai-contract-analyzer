@@ -4,8 +4,6 @@ python-docx
 PyPDF2
 openpyxl
 python-pptx
-PyMuPDF
+pymupdf
 pytesseract  
 Pillow
-fpdf2==2.7.9
-starlette==0.52.1
