@@ -13,11 +13,11 @@ from PIL import Image
 
 st.set_page_config(page_title="ИИ-Анализатор договоров", page_icon="🤖", layout="wide")
 
+MAX_OCR_PAGES = 8
+
 st.title("🤖 ИИ-Анализатор договоров")
 st.markdown("Автоматический анализ договоров с помощью искусственного интеллекта")
 st.markdown("📄 **Загрузите договоры** → 🤖 **ИИ найдёт риски** → 📊 **Получите отчёты**")
-
-MAX_OCR_PAGES = 8  # максимум страниц скана для распознавания
 
 
 # ============================================================
@@ -39,12 +39,10 @@ def get_credentials():
 
 with st.sidebar:
     st.header("⚙️ Настройки")
-    creds = get_credentials()
-    if creds:
+    if get_credentials():
         st.success("✅ Токен GigaChat загружен автоматически")
     else:
         st.warning("⚠️ Токен не найден. Добавьте GIGACHAT_CREDENTIALS в Settings → Secrets")
-
     st.markdown("---")
     model_name = st.selectbox(
         "Модель нейросети (код сам подберёт рабочую)",
@@ -55,7 +53,7 @@ with st.sidebar:
 
 
 # ============================================================
-# ИЗВЛЕЧЕНИЕ ТЕКСТА (обычные файлы)
+# ИЗВЛЕЧЕНИЕ ТЕКСТА ИЗ ФАЙЛОВ
 # ============================================================
 def extract_text_from_docx(file_bytes):
     doc = Document(io.BytesIO(file_bytes))
@@ -108,10 +106,30 @@ def extract_text(file):
 
 
 # ============================================================
-# OCR СКАНОВ ЧЕРЕЗ ЗРЕНИЕ GIGACHAT (Vision)
+# OCR СКАНОВ ЧЕРЕЗ ЗРЕНИЕ GIGACHAT
 # ============================================================
-def _response_text(response):
-    """Универсально достаём текст ответа (новый и старый формат SDK)."""
+def _pages_as_jpeg(file_bytes, filename):
+    pages = []
+    low = filename.lower()
+    try:
+        if low.endswith(".pdf"):
+            doc = pymupdf.open(stream=file_bytes, filetype="pdf")
+            for page in doc:
+                if len(pages) >= MAX_OCR_PAGES:
+                    break
+                pix = page.get_pixmap(dpi=150)
+                pages.append(pix.tobytes("jpeg"))
+        elif low.endswith((".png", ".jpg", ".jpeg", ".tiff", ".bmp")):
+            img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=85)
+            pages.append(buf.getvalue())
+    except Exception:
+        pass
+    return pages
+
+
+def _ocr_text(response):
     try:
         for part in response.messages[0].content:
             if getattr(part, "text", None):
@@ -124,26 +142,7 @@ def _response_text(response):
         return ""
 
 
-def _pages_as_jpeg(file_bytes, filename):
-    """Превращаем PDF или картинку в список JPEG-байтов страниц."""
-    pages = []
-    if filename.lower().endswith('.pdf'):
-        doc = pymupdf.open(stream=file_bytes, filetype="pdf")
-        for page in doc:
-            if len(pages) >= MAX_OCR_PAGES:
-                break
-            pix = page.get_pixmap(dpi=150)
-            pages.append(pix.tobytes("jpeg"))
-    elif filename.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp')):
-        img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=85)
-        pages.append(buf.getvalue())
-    return pages
-
-
 def vision_ocr(file_bytes, filename):
-    """Распознаёт скан: грузит страницы как файлы и просит модель переписать текст."""
     credentials = get_credentials()
     if not credentials:
         return ""
@@ -151,11 +150,11 @@ def vision_ocr(file_bytes, filename):
     if not pages:
         return ""
 
-    texts = []
     progress = st.progress(0.0)
     try:
         for vision_model in ("GigaChat-2-Pro", "GigaChat-2-Max"):
             try:
+                texts = []
                 with GigaChat(
                     credentials=credentials,
                     scope="GIGACHAT_API_PERS",
@@ -163,7 +162,6 @@ def vision_ocr(file_bytes, filename):
                     verify_ssl_certs=False,
                     timeout=300,
                 ) as client:
-                    texts = []
                     for i, img in enumerate(pages):
                         progress.progress(
                             (i / len(pages)),
@@ -186,21 +184,23 @@ def vision_ocr(file_bytes, filename):
                                 ]
                             )
                         )
-                        texts.append(_response_text(resp))
+                        texts.append(_ocr_text(resp))
                         try:
                             client.delete_file(uploaded.id_)
                         except Exception:
                             pass
-                    break  # модель сработала — выходим из перебора
+                joined = "\n\n".join(t for t in texts if t and t.strip())
+                if joined.strip():
+                    return joined
             except Exception:
                 continue
     finally:
         progress.progress(1.0, text="✅ Распознавание завершено")
-    return "\n\n".join(t for t in texts if t and t.strip())
+    return ""
 
 
 # ============================================================
-# АНАЛИЗ ДОГОВОРА (10 параметров, автоподбор модели)
+# АНАЛИЗ ДОГОВОРА (10 ПАРАМЕТРОВ, АВТОПОДБОР МОДЕЛИ)
 # ============================================================
 def analyze_contract(text):
     credentials = get_credentials()
@@ -250,50 +250,108 @@ def analyze_contract(text):
     raise ValueError(f"Ни одна модель не подошла. Ошибка: {last_error}")
 
 
+# ============================================================
+# УМНЫЙ ПАРСЕР ОТВЕТА (понимает списки и переносы строк)
+# ============================================================
 def empty_parsed():
     return {
-        "Тип договора": "не определён", "Субъектный состав": "не определён",
-        "Предмет договора": "не указан", "Сумма договора": "не указана",
-        "Срок действия": "не указан", "Порядок оплаты": "не указан",
-        "Ответственность сторон": "не указана", "Условия расторжения": "не указаны",
-        "ИНН сторон": "отсутствует", "Юридические риски": "не найдены"
+        "Тип договора": "не определён",
+        "Субъектный состав": "не определён",
+        "Предмет договора": "не указан",
+        "Сумма договора": "не указана",
+        "Срок действия": "не указан",
+        "Порядок оплаты": "не указан",
+        "Ответственность сторон": "не указана",
+        "Условия расторжения": "не указаны",
+        "ИНН сторон": "отсутствует",
+        "Юридические риски": "не найдены",
     }
+
+
+PLACEHOLDERS = {"не определён", "не указан", "не указана", "не указаны", "не найдены", ""}
+
+
+def _field_by_key(key):
+    if "ИНН" in key:
+        return "ИНН сторон"
+    if "ТИП" in key:
+        return "Тип договора"
+    if "СУБЪЕКТ" in key or "СОСТАВ" in key:
+        return "Субъектный состав"
+    if "ПРЕДМЕТ" in key:
+        return "Предмет договора"
+    if "СУММА" in key or "ЦЕНА" in key:
+        return "Сумма договора"
+    if "СРОК" in key:
+        return "Срок действия"
+    if "ОПЛАТ" in key:
+        return "Порядок оплаты"
+    if "ОТВЕТСТВЕННОСТЬ" in key or "ПЕН" in key or "ШТРАФ" in key or "НЕУСТОЙК" in key:
+        return "Ответственность сторон"
+    if "РАСТОРЖ" in key:
+        return "Условия расторжения"
+    if "РИСК" in key:
+        return "Юридические риски"
+    return None
 
 
 def parse_response(ai_text):
     data = empty_parsed()
     if not ai_text:
         return data
-    for line in ai_text.split("\n"):
-        line = line.strip().lstrip("-•* ").replace("**", "")
+
+    current = None
+    for raw in ai_text.split("\n"):
+        line = raw.strip().lstrip("-•* ").replace("**", "")
         line = re.sub(r'^\d+[.)]\s*', '', line)
-        if ":" not in line:
+        if not line:
             continue
-        key, val = line.split(":", 1)
-        key, val = key.strip().upper(), val.strip()
-        if not val:
-            continue
-        if "ТИП" in key:
-            data["Тип договора"] = val
-        elif "СУБЪЕКТ" in key or "СОСТАВ" in key:
-            data["Субъектный состав"] = val
-        elif "ПРЕДМЕТ" in key:
-            data["Предмет договора"] = val
-        elif "СУММА" in key or "ЦЕНА" in key:
-            data["Сумма договора"] = val
-        elif "СРОК" in key:
-            data["Срок действия"] = val
-        elif "ОПЛАТ" in key:
-            data["Порядок оплаты"] = val
-        elif "ОТВЕТСТВЕННОСТЬ" in key or "ПЕН" in key or "ШТРАФ" in key or "НЕУСТОЙК" in key:
-            data["Ответственность сторон"] = val
-        elif "РАСТОРЖ" in key:
-            data["Условия расторжения"] = val
-        elif "ИНН" in key:
-            data["ИНН сторон"] = val
-        elif "РИСК" in key:
-            data["Юридические риски"] = val
+
+        if ":" in line:
+            key, val = line.split(":", 1)
+            field = _field_by_key(key.strip().upper())
+            if field:
+                prev_current = current
+                current = field
+                val = val.strip().rstrip(";,")
+                if val:
+                    if prev_current == field and data[field] not in PLACEHOLDERS:
+                        data[field] = data[field] + "; " + val
+                    else:
+                        data[field] = val
+                continue
+
+        # строка без двоеточия — пункт списка внутри текущего блока
+        if current:
+            line = line.rstrip(";,")
+            prev = data[current]
+            if prev in PLACEHOLDERS:
+                data[current] = line
+            else:
+                data[current] = prev + "; " + line
     return data
+
+
+# ============================================================
+# НОМЕР И ДАТА ИЗ ТЕКСТА
+# ============================================================
+def extract_number(text):
+    head = text[:3000]
+    m = re.search(r'[№N]\s*(\d+[а-яА-Я/\-]*)', head)
+    if m:
+        return m.group(1)
+    m = re.search(r'(?:Договор|Контракт|Соглашение)\s+[№N]?\s*(\d+)', head, re.IGNORECASE)
+    return m.group(1) if m else "не указан"
+
+
+def extract_date(text):
+    head = text[:3000]
+    months = r'января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря'
+    m = re.search(rf'[«"]?(\d{{1,2}})[»"]?\s+({months})\s+(\d{{4}})', head, re.IGNORECASE)
+    if m:
+        return f"{m.group(1)} {m.group(2)} {m.group(3)} г"
+    m = re.search(r'(\d{2})\.(\d{2})\.(\d{4})', head)
+    return f"{m.group(1)}.{m.group(2)}.{m.group(3)}" if m else "не указана"
 
 
 # ============================================================
@@ -309,12 +367,9 @@ def generate_docx_report(fname, parsed, ai_response):
     hdr[0].text = 'Параметр'
     hdr[1].text = 'Значение'
     for key, val in parsed.items():
-        if key != "Юридические риски":
-            cells = table.add_row().cells
-            cells[0].text = key
-            cells[1].text = str(val)
-    doc.add_heading('⚠️ Юридические риски', level=1)
-    doc.add_paragraph(parsed.get("Юридические риски", "не найдены"))
+        cells = table.add_row().cells
+        cells[0].text = key
+        cells[1].text = str(val)
     doc.add_heading('🤖 Полный ИИ-анализ', level=1)
     doc.add_paragraph(ai_response if ai_response else "Анализ не выполнен")
     buffer = io.BytesIO()
@@ -380,18 +435,17 @@ if uploaded_files:
         file_bytes = file.getvalue()
         text = extract_text(file)
 
-        # Если текста нет — пробуем распознать скан через Vision
         if len(text.strip()) < 40:
             text = vision_ocr(file_bytes, file.name)
             if text.strip():
                 st.info("📷 Файл распознан как скан: текст извлечён через GigaChat Vision.")
 
         if not text.strip():
-            st.warning("⚠️ Не удалось извлечь текст даже через распознавание сканов. "
-                       "Попробуйте сохранить файл как .docx или загрузить более чёткий скан.")
+            st.warning("⚠️ Не удалось извлечь текст даже через распознавание сканов.")
             continue
 
-        with st.spinner("🤖 ИИ анализирует документ по 10 параметрам..."):
+        model_hint = st.session_state.get('working_model', st.session_state.get('giga_model', '...'))
+        with st.spinner(f"🤖 ({model_hint}) анализирует документ по 10 параметрам..."):
             ai_response, ai_error = None, None
             try:
                 ai_response = analyze_contract(text)
@@ -399,7 +453,7 @@ if uploaded_files:
                 ai_error = str(e)
 
         parsed = parse_response(ai_response)
-        results.append((file.name, parsed, ai_response, ai_error))
+        results.append((file.name, parsed, ai_response, ai_error, text))
         processed += 1
 
     if processed:
@@ -408,14 +462,21 @@ if uploaded_files:
         st.markdown("---")
         st.subheader("📊 Результаты анализа")
 
-        for fname, parsed, ai_response, ai_error in results:
+        for fname, parsed, ai_response, ai_error, raw_text in results:
             st.markdown(f"#### 📄 {fname}")
             if ai_error:
                 st.error(f"❌ Ошибка анализа: {ai_error}")
                 st.markdown("---")
                 continue
 
-            param_df = [[k, v] for k, v in parsed.items() if k != "Юридические риски"]
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Номер", extract_number(raw_text))
+            c2.metric("Дата", extract_date(raw_text))
+            c3.metric("Сумма", parsed["Сумма договора"])
+            c4.metric("ИНН", parsed["ИНН сторон"])
+            c5.metric("Пени", parsed["Ответственность сторон"][:60])
+
+            param_df = [[k, v] for k, v in parsed.items()]
             st.table(param_df)
 
             with st.expander("⚠️ Юридические риски", expanded=True):
